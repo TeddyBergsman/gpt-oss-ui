@@ -45,10 +45,9 @@ def main():
     
 
     # --- System Prompt Construction ---
-    # Only modify the system prompt for specific reasoning levels. "None" is handled later.
+    # The reasoning effort is now passed as an API parameter in chat_logic.py,
+    # so we no longer need to modify the system prompt text here.
     final_system_prompt = base_prompt
-    if reasoning_effort in ["High", "Medium", "Low"]:
-        final_system_prompt += f"\n\nReasoning: {reasoning_effort.lower()}"
 
     # --- Chat Reset Logic ---
     if (st.session_state.prompt_index != selected_prompt_index or

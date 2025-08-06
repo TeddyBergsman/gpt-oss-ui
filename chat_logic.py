@@ -20,6 +20,11 @@ def process_and_stream_response(user_input, add_special_message, reasoning_effor
     # If reasoning is "None", append the no-think prompt to the message being sent
     if reasoning_effort == "None":
         message_to_send += config.NOTHINK_PROMPT
+    
+    # Construct the model-specific options dictionary
+    model_options = {}
+    if reasoning_effort in ["High", "Medium", "Low"]:
+        model_options["reasoning_effort"] = reasoning_effort.lower()
 
     model_messages = st.session_state.messages[:-1] + [{"role": "user", "content": message_to_send}]
 
@@ -33,7 +38,8 @@ def process_and_stream_response(user_input, add_special_message, reasoning_effor
         stream = chat(
             model=config.MODEL_NAME,
             messages=model_messages,
-            stream=True
+            stream=True,
+            options=model_options # Correct way to pass model-specific parameters
         )
         
         with thinking_container, st.status("Reasoning...", expanded=True) as status:
@@ -52,11 +58,9 @@ def process_and_stream_response(user_input, add_special_message, reasoning_effor
                 status.update(label="Reasoning", state="complete", expanded=False)
                 thinking_placeholder.markdown(full_thinking_content)
             else:
-                status.update(state="complete")
+                status.update(state="complete", expanded=False)
+                thinking_container.empty()
         
-        if not has_thinking_content:
-            thinking_container.empty()
-            
         response_placeholder.markdown(full_response_content)
 
     st.session_state.messages.append({
