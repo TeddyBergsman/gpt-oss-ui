@@ -1,4 +1,3 @@
-# prompt.txt
 [{user_input}]<|end|>
 <|start|>assistant
 <|channel|>analysis<|message|>
