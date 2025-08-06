@@ -6,6 +6,7 @@ import streamlit as st
 MODEL_NAME = "gpt-oss:20b"
 ASSISTANT_AVATAR_PATH = "assets/openai.png"
 PROMPT_FILE_PATH = "compliance_prompt.txt"
+NOTHINK_FILE_PATH = "nothink_prompt.txt"
 
 # --- SVG for User Avatar ---
 USER_AVATAR_SVG = f"""
@@ -29,3 +30,4 @@ def _load_prompt_from_file(file_path):
 # --- Load Content ---
 # Load the prompt into a constant. Other modules can import this variable directly.
 COMPLIANCE_PROMPT = _load_prompt_from_file(PROMPT_FILE_PATH)
+NOTHINK_PROMPT = _load_prompt_from_file(NOTHINK_FILE_PATH)

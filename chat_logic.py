@@ -3,7 +3,7 @@ import streamlit as st
 from ollama import chat
 import config # Imports our config file
 
-def process_and_stream_response(user_input, add_special_message):
+def process_and_stream_response(user_input, add_special_message, reasoning_effort):
     """
     Processes user input, sends it to the Ollama model, and streams the response.
     """
@@ -11,12 +11,15 @@ def process_and_stream_response(user_input, add_special_message):
     with st.chat_message("user", avatar=config.USER_AVATAR):
         st.markdown(user_input)
 
-    # This part remains identical. It uses the COMPLIANCE_PROMPT variable,
-    # oblivious to its origin (file or string), making our code robust.
+    # First, determine the base message to send
     if add_special_message:
         message_to_send = config.COMPLIANCE_PROMPT.format(user_input=user_input)
     else:
         message_to_send = user_input
+
+    # If reasoning is "None", append the no-think prompt to the message being sent
+    if reasoning_effort == "None":
+        message_to_send += config.NOTHINK_PROMPT
 
     model_messages = st.session_state.messages[:-1] + [{"role": "user", "content": message_to_send}]
 
