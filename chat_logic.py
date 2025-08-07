@@ -1,7 +1,8 @@
 # chat_logic.py
 import streamlit as st
 from ollama import chat
-import config # Imports our config file
+import config  # Imports our config file
+from core.chat_service import ChatSession, ChatMessage
 
 def process_and_stream_response(user_input, add_special_message, reasoning_effort):
     """
@@ -11,22 +12,20 @@ def process_and_stream_response(user_input, add_special_message, reasoning_effor
     with st.chat_message("user", avatar=config.USER_AVATAR):
         st.markdown(user_input)
 
-    # First, determine the base message to send
-    if add_special_message:
-        message_to_send = config.COMPLIANCE_PROMPT.format(user_input=user_input)
-    else:
-        message_to_send = user_input
+    # Build payload via UI-agnostic core service so both Streamlit and Desktop share logic
+    base_system_prompt = st.session_state.messages[0]["content"] if st.session_state.messages else ""
+    session = ChatSession(base_system_prompt=base_system_prompt, model_name=config.MODEL_NAME)
+    # Mirror Streamlit history (skip the system message which session already has)
+    for m in st.session_state.messages[1:]:
+        session.messages.append(
+            ChatMessage(role=m["role"], content=m.get("content", ""), thinking=m.get("thinking"))
+        )
 
-    # If reasoning is "None", append the no-think prompt to the message being sent
-    if reasoning_effort == "None":
-        message_to_send += config.NOTHINK_PROMPT
-    
-    # Construct the model-specific options dictionary
-    model_options = {}
-    if reasoning_effort in ["High", "Medium", "Low"]:
-        model_options["reasoning_effort"] = reasoning_effort.lower()
-
-    model_messages = st.session_state.messages[:-1] + [{"role": "user", "content": message_to_send}]
+    model_messages, model_options, message_to_send = session.build_stream_payload(
+        user_input=user_input,
+        add_special_message=add_special_message,
+        reasoning_effort=reasoning_effort,
+    )
 
     with st.chat_message("assistant", avatar=config.ASSISTANT_AVATAR_PATH):
         thinking_container = st.container()

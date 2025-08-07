@@ -1,0 +1,36 @@
+/* Theme QSS using token interpolation from theme.py */
+
+QWidget { font-family: 'Inter', 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 14px; }
+QMainWindow { background: {{color_bg}}; }
+QSplitter::handle { background: {{color_border}}; }
+QToolBar { background: {{color_bg}}; border-bottom: 1px solid {{color_border}}; spacing: 6px; }
+QToolButton { color: {{color_text}}; border-radius: {{radius_sm}}; padding: 6px 8px; }
+QToolButton:hover { background: rgba(255,255,255,0.04); }
+QLabel#title { color: {{color_text}}; font-size: 18px; font-weight: 600; }
+QLabel#badge { color: {{color_text_muted}}; font-size: 12px; padding: 2px 8px; border: 1px solid {{color_border}}; border-radius: {{radius_lg}}; }
+QWidget#sidebar { background: {{color_surface}}; border-right: 1px solid {{color_border}}; }
+QComboBox, QLineEdit, QTextEdit, QPlainTextEdit { background: #0d1117; color: {{color_text}}; border: 1px solid {{color_border}}; border-radius: {{radius_md}}; padding: 6px; }
+QCheckBox { color: {{color_text}}; }
+QPushButton { background: {{color_accent}}; color: white; border: none; border-radius: {{radius_md}}; padding: 8px 12px; }
+QPushButton:hover { background: #4f8df7; }
+QPushButton:disabled { background: {{color_border}}; color: {{color_text_muted}}; }
+QScrollArea#chatScroll { background: transparent; border: none; }
+QWidget#chatCanvas { background: transparent; }
+QLabel#msgHeader { color: {{color_text_muted}}; font-size: 12px; margin: 0 0 6px 0; }
+QTextBrowser { background: transparent; color: {{color_text}}; border: none; }
+QToolButton#copyBtn { border: 1px solid {{color_border}}; border-radius: {{radius_sm}}; padding: 2px 6px; color: {{color_text}}; }
+QToolButton#copyBtn:hover { background: #0d1117; }
+QPlainTextEdit#chatInput { background: #0d1117; border: 1px solid {{color_border}}; border-radius: {{radius_lg}}; color: {{color_text}}; padding: 10px 12px; }
+QPlainTextEdit#chatInput:focus { border-color: {{color_accent}}; }
+
+/* Chat bubbles */
+QFrame#chatBubble { border: 1px solid {{color_border}}; border-radius: {{radius_lg}}; background: {{color_surface}}; }
+/* Let bubbles expand to available width from layout */
+/* Centered layout margins are controlled by stretches in code */
+QFrame#chatBubble[user="true"] { background: rgba(59,130,246,0.1); border-color: #355c9a; }
+QLabel[meta="true"] { color: {{color_text_muted}}; font-size: 11px; }
+
+/* Toasts */
+QFrame.toast { background: rgba(17,24,39,0.95); border: 1px solid {{color_border}}; border-radius: {{radius_md}}; color: {{color_text}}; padding: 8px 12px; }
+
+

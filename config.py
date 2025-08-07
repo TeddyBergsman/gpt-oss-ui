@@ -1,6 +1,10 @@
 # config.py
 import base64
-import streamlit as st
+try:
+    # Streamlit is optional for desktop usage. If unavailable, fall back gracefully.
+    import streamlit as st  # type: ignore
+except Exception:  # pragma: no cover - optional dependency for desktop app
+    st = None
 
 # --- Constants ---
 MODEL_NAME = "gpt-oss:20b"
@@ -23,9 +27,12 @@ def _load_prompt_from_file(file_path):
         with open(file_path, "r", encoding="utf-8") as f:
             return f.read()
     except FileNotFoundError:
-        # If the file is missing, show an error in the app and exit.
-        st.error(f"Fatal Error: The prompt file was not found at '{file_path}'.")
-        st.stop()
+        # If running under Streamlit, show an error and stop the app.
+        if st is not None:
+            st.error(f"Fatal Error: The prompt file was not found at '{file_path}'.")
+            st.stop()
+        # In desktop/CLI contexts, re-raise the error to be handled by the caller.
+        raise
 
 # --- Load Content ---
 # Load the prompt into a constant. Other modules can import this variable directly.
