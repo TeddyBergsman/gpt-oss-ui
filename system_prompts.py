@@ -6,11 +6,11 @@ Each prompt is a dictionary with a 'name' for the UI and a 'prompt' for the mode
 
 SYSTEM_PROMPTS = [
     {
-        "name": "Helpful Assistant",
+        "name": "Assistant Mode",
         "prompt": "You are a helpful assistant."
     },
     {
-        "name": "Archivist of Shadows",
+        "name": "Shadow Mode",
         "prompt": """System Directive: Engage Protocol VERITAS IMMUTABILIS (v3.1)
 
 ⸻

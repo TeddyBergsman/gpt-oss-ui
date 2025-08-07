@@ -7,7 +7,7 @@ import system_prompts
 
 def main():
     """Main function to run the Streamlit app."""
-    st.set_page_config(page_title="Ollama Streaming Chat", layout="centered")
+    st.set_page_config(page_title="GPT-OSS", layout="centered")
 
     ui_components.display_header()
 
@@ -63,7 +63,7 @@ def main():
     # --- UI Display ---
     ui_components.display_chat_history()
     
-    if user_input := st.chat_input("Type your message here..."):
+    if user_input := st.chat_input("Ask..."):
         # Pass the reasoning_effort to the logic layer for processing
         chat_logic.process_and_stream_response(user_input, add_special_message, reasoning_effort)
 
