@@ -2,15 +2,53 @@
 
 QWidget { font-family: 'Inter', 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 14px; }
 QMainWindow { background: {{color_bg}}; }
-QSplitter::handle { background: {{color_border}}; }
+/* Remove splitter handle visuals entirely */
+QSplitter::handle { background: transparent; }
+QSplitter::handle:horizontal { width: 0px; }
 QToolBar { background: {{color_bg}}; border-bottom: 1px solid {{color_border}}; spacing: 6px; }
 QToolButton { color: {{color_text}}; border-radius: {{radius_sm}}; padding: 6px 8px; }
 QToolButton:hover { background: rgba(255,255,255,0.04); }
 QLabel#title { color: {{color_text}}; font-size: 18px; font-weight: 600; }
 QLabel#badge { color: {{color_text_muted}}; font-size: 12px; padding: 2px 8px; border: 1px solid {{color_border}}; border-radius: {{radius_lg}}; }
-QWidget#sidebar { background: {{color_surface}}; border-right: 1px solid {{color_border}}; }
-QComboBox, QLineEdit, QTextEdit, QPlainTextEdit { background: #0d1117; color: {{color_text}}; border: 1px solid {{color_border}}; border-radius: {{radius_md}}; padding: 6px; }
-QCheckBox { color: {{color_text}}; }
+/* Sidebar */
+QScrollArea#sidebarScroll { background: {{color_surface}}; border-right: 1px solid {{color_border}}; }
+QScrollArea#sidebarScroll > QWidget > QWidget { background: transparent; }
+/* Remove any hint of inner frame or focus ring inside sidebar */
+QScrollArea#sidebarScroll, QScrollArea#sidebarScroll QWidget { outline: 0; border: none; }
+QWidget#sidebar { background: transparent; }
+QLabel#sidebarTitle { color: {{color_text}}; font-weight: 600; }
+QLabel#sectionLabel { color: {{color_text_muted}}; font-size: 11px; letter-spacing: 0.12em; }
+
+/* Sidebar card */
+QFrame#sidebarCard { background: rgba(255,255,255,0.02); border: 1px solid {{color_border}}; border-radius: {{radius_md}}; margin-top: 8px; }
+QFrame#sidebarCard:hover { border-color: rgba(255,255,255,0.12); }
+QComboBox, QLineEdit, QTextEdit, QPlainTextEdit { background: #0d1117; color: {{color_text}}; border: 1px solid {{color_border}}; border-radius: {{radius_md}}; padding: 6px 8px; }
+QCheckBox { color: {{color_text}}; padding: 4px 2px; }
+/* Restore a proper drop-down segment that respects rounded right corners */
+/* Robust combo styling to prevent right-edge clipping */
+QComboBox { padding-right: 30px; }
+QComboBox::drop-down {
+  width: 28px;
+  border: none;
+  background: transparent;
+  subcontrol-origin: padding;
+  subcontrol-position: top right;
+}
+QComboBox::down-arrow { image: none; }
+QComboBox QAbstractItemView { background: #0b1020; color: {{color_text}}; border: 1px solid {{color_border}}; outline: none; padding: 0px; }
+QComboBox QAbstractItemView::item { padding: 8px 10px; margin: 0px; }
+QComboBox QAbstractItemView::item:selected { background: rgba(59,130,246,0.22); }
+QComboBox QAbstractItemView, QComboBox QAbstractItemView::viewport { background: #0b1020; }
+QComboBox QAbstractScrollArea { background: #0b1020; }
+QComboBox QScrollBar:vertical { background: #0b1020; width: 8px; margin: 0; }
+QComboBox QScrollBar::handle:vertical { background: rgba(255,255,255,0.12); border-radius: 4px; min-height: 16px; }
+QCheckBox::indicator { width: 16px; height: 16px; border-radius: 4px; border: 1px solid {{color_border}}; background: #0d1117; margin-right: 8px; }
+QCheckBox::indicator:checked { background: {{color_accent}}; border-color: {{color_accent}}; }
+
+/* Scrollbars */
+QScrollBar:vertical { background: transparent; width: 10px; margin: 0; }
+QScrollBar::handle:vertical { background: rgba(255,255,255,0.12); border-radius: 5px; min-height: 24px; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QPushButton { background: {{color_accent}}; color: white; border: none; border-radius: {{radius_md}}; padding: 8px 12px; }
 QPushButton:hover { background: #4f8df7; }
 QPushButton:disabled { background: {{color_border}}; color: {{color_text_muted}}; }

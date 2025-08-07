@@ -433,6 +433,33 @@ class ToastOverlay(QtWidgets.QFrame):
         self._anim.finished.connect(self.hide)
 
 
+class _NoDragHandle(QtWidgets.QSplitterHandle):
+    def __init__(self, orientation: QtCore.Qt.Orientation, parent: QtWidgets.QSplitter) -> None:
+        super().__init__(orientation, parent)
+        self.setCursor(QtCore.Qt.CursorShape.ArrowCursor)
+        self.setFixedWidth(0)
+
+    def sizeHint(self) -> QtCore.QSize:  # type: ignore[override]
+        return QtCore.QSize(0, 0)
+
+    def paintEvent(self, event: QtGui.QPaintEvent) -> None:  # type: ignore[override]
+        # Do not paint any handle visuals
+        return
+
+    def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:  # type: ignore[override]
+        event.ignore()
+
+    def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:  # type: ignore[override]
+        event.ignore()
+
+    def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:  # type: ignore[override]
+        event.ignore()
+
+
+class FixedSidebarSplitter(QtWidgets.QSplitter):
+    def createHandle(self) -> QtWidgets.QSplitterHandle:  # type: ignore[override]
+        return _NoDragHandle(self.orientation(), self)
+
 class ChatWindow(QtWidgets.QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -458,54 +485,89 @@ class ChatWindow(QtWidgets.QMainWindow):
         self.setCentralWidget(central_widget)
         main_layout = QtWidgets.QVBoxLayout(central_widget)
 
-        # Toolbar header
-        toolbar = QtWidgets.QToolBar()
-        toolbar.setMovable(False)
-        title = QtWidgets.QLabel("GPT-OSS")
-        title.setObjectName("title")
-        toolbar.addWidget(title)
-        toolbar.addSeparator()
-        action_new = QtGui.QAction(qta.icon("mdi.plus") if qta else self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileIcon), "New Chat", self)
-        action_new.setShortcut(QtGui.QKeySequence("Meta+N"))
-        action_new.triggered.connect(self._new_chat)
-        toolbar.addAction(action_new)
-        action_settings = QtGui.QAction(qta.icon("mdi.cog") if qta else self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileDialogDetailedView), "Toggle Settings", self)
-        action_settings.triggered.connect(self._toggle_settings)
-        toolbar.addAction(action_settings)
-        toolbar.addSeparator()
-        spacer = QtWidgets.QWidget()
-        spacer.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
-        toolbar.addWidget(spacer)
-        model_badge = QtWidgets.QLabel(config.MODEL_NAME)
-        model_badge.setObjectName("badge")
-        toolbar.addWidget(model_badge)
-        self.addToolBar(toolbar)
+        # No global header bar per design
 
         # Splitter: left (settings) / right (chat)
-        splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        splitter = FixedSidebarSplitter(QtCore.Qt.Orientation.Horizontal)
+        self.splitter = splitter
         main_layout.addWidget(splitter, 1)
 
-        # Settings panel
-        settings_widget = QtWidgets.QWidget()
-        settings_widget.setObjectName("sidebar")
-        settings_layout = QtWidgets.QFormLayout(settings_widget)
+        # Settings panel (modernized sidebar)
+        sidebar_container = QtWidgets.QScrollArea()
+        sidebar_container.setObjectName("sidebarScroll")
+        sidebar_container.setWidgetResizable(True)
+        sidebar_container.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        sidebar_container.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        # Use zero viewport margins; spacing is handled by inner layouts
+        sidebar_container.setViewportMargins(0, 0, 0, 0)
+        sidebar = QtWidgets.QWidget()
+        sidebar.setObjectName("sidebar")
+        sidebar_layout = QtWidgets.QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(16, 16, 16, 16)
+        sidebar_layout.setSpacing(16)
+
+        card = QtWidgets.QFrame()
+        card.setObjectName("sidebarCard")
+        card_layout = QtWidgets.QVBoxLayout(card)
+        card_layout.setContentsMargins(16, 16, 16, 16)
+        card_layout.setSpacing(16)
+
+        # Sidebar header
+        header_row = QtWidgets.QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(8)
+        if qta:
+            icon_label = QtWidgets.QLabel()
+            icon_label.setPixmap(qta.icon("mdi.tune").pixmap(16, 16))
+            header_row.addWidget(icon_label)
+        title_label = QtWidgets.QLabel("Settings")
+        title_label.setObjectName("sidebarTitle")
+        header_row.addWidget(title_label)
+        header_row.addStretch(1)
+        # Collapser in top-right of sidebar
+        self.sidebar_collapse_btn = QtWidgets.QToolButton()
+        if qta:
+            self.sidebar_collapse_btn.setIcon(qta.icon("mdi.chevron-left"))
+        else:
+            self.sidebar_collapse_btn.setText("<")
+        self.sidebar_collapse_btn.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
+        self.sidebar_collapse_btn.clicked.connect(self._toggle_settings)
+        header_row.addWidget(self.sidebar_collapse_btn)
+        card_layout.addLayout(header_row)
 
         self.compliance_checkbox = QtWidgets.QCheckBox("Compliance Protocol")
         self.compliance_checkbox.stateChanged.connect(self._on_toggle_compliance)
-        settings_layout.addRow(self.compliance_checkbox)
+        card_layout.addWidget(self.compliance_checkbox)
+
+        form = QtWidgets.QFormLayout()
+        form.setFormAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop)
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(12)
+        form.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        form.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
 
         prompt_names = [p["name"] for p in SYSTEM_PROMPTS]
         self.prompt_combo = QtWidgets.QComboBox()
         self.prompt_combo.addItems(prompt_names)
         self.prompt_combo.currentIndexChanged.connect(self._on_prompt_changed)
-        settings_layout.addRow("System Prompt:", self.prompt_combo)
+        self._configure_combo(self.prompt_combo)
+        form.addRow("System Prompt", self.prompt_combo)
 
         self.reasoning_combo = QtWidgets.QComboBox()
         self.reasoning_combo.addItems(REASONING_OPTIONS)
         self.reasoning_combo.currentIndexChanged.connect(self._on_reasoning_changed)
-        settings_layout.addRow("Reasoning Effort:", self.reasoning_combo)
+        self._configure_combo(self.reasoning_combo)
+        form.addRow("Reasoning Effort", self.reasoning_combo)
 
-        splitter.addWidget(settings_widget)
+        card_layout.addLayout(form)
+        sidebar_layout.addWidget(card)
+        sidebar_layout.addStretch(1)
+
+        sidebar_container.setWidget(sidebar)
+        splitter.addWidget(sidebar_container)
+        # Widen to ensure no clipping of content even with right padding
+        sidebar_container.setMinimumWidth(380)
+        sidebar_container.setMaximumWidth(380)
 
         # Chat panel
         chat_panel = QtWidgets.QWidget()
@@ -564,6 +626,52 @@ class ChatWindow(QtWidgets.QMainWindow):
 
         # Toast overlay
         self._toast = ToastOverlay(self)
+
+        # Overlay expand button visibility is controlled manually on toggle
+
+        # Expand button overlay (visible when sidebar hidden)
+        self._expand_sidebar_btn = QtWidgets.QToolButton(self)
+        if qta:
+            self._expand_sidebar_btn.setIcon(qta.icon("mdi.chevron-right"))
+        else:
+            self._expand_sidebar_btn.setText(">")
+        self._expand_sidebar_btn.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
+        self._expand_sidebar_btn.setStyleSheet(
+            "QToolButton { border: 1px solid #242b36; border-radius: 12px; padding: 2px; background: rgba(255,255,255,0.04); }"
+        )
+        self._expand_sidebar_btn.setFixedSize(24, 24)
+        self._expand_sidebar_btn.setIconSize(QtCore.QSize(14, 14))
+        self._expand_sidebar_btn.clicked.connect(self._toggle_settings)
+        self._expand_sidebar_btn.hide()
+        self._position_expand_button()
+        # After first show/layout pass, re-sync visibility in case early resize
+        # events ran before child widgets reported correct visibility
+        QtCore.QTimer.singleShot(0, self._apply_responsive_sidebar)
+
+    def showEvent(self, event: QtGui.QShowEvent) -> None:  # type: ignore[override]
+        super().showEvent(event)
+        # Ensure the expand button is hidden when the sidebar is visible on first show
+        self._apply_responsive_sidebar()
+
+    def _configure_combo(self, combo: QtWidgets.QComboBox) -> None:
+        combo.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
+        combo.setMinimumHeight(32)
+        combo.setSizeAdjustPolicy(QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToContents)
+        view = QtWidgets.QListView()
+        view.setUniformItemSizes(False)
+        view.setTextElideMode(QtCore.Qt.TextElideMode.ElideNone)
+        view.setSpacing(2)
+        view.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        view.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        view.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollMode.ScrollPerPixel)
+        combo.setView(view)
+        # Widen popup to fit longest item
+        fm = combo.fontMetrics()
+        try:
+            max_w = max((fm.horizontalAdvance(combo.itemText(i)) for i in range(combo.count())), default=160)
+        except Exception:
+            max_w = 160
+        view.setMinimumWidth(max(180, max_w + 36))
 
     # --- Slots ---
     def _on_toggle_compliance(self, state: int) -> None:
@@ -682,11 +790,27 @@ class ChatWindow(QtWidgets.QMainWindow):
 
     def _toggle_settings(self) -> None:
         # Show/hide the left pane
-        splitter: QtWidgets.QSplitter = self.centralWidget().findChild(QtWidgets.QSplitter)
-        if not splitter:
-            return
+        splitter: QtWidgets.QSplitter = self.splitter
         left = splitter.widget(0)
-        left.setVisible(not left.isVisible())
+        was_visible = left.isVisible()
+        left.setVisible(not was_visible)
+        if self._expand_sidebar_btn is None and was_visible:
+            # Lazily create expand button when first needed
+            self._expand_sidebar_btn = QtWidgets.QToolButton(self)
+            if qta:
+                self._expand_sidebar_btn.setIcon(qta.icon("mdi.chevron-right"))
+            else:
+                self._expand_sidebar_btn.setText(">")
+            self._expand_sidebar_btn.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
+            self._expand_sidebar_btn.setStyleSheet(
+                "QToolButton { border: 1px solid #242b36; border-radius: 12px; padding: 2px; background: rgba(255,255,255,0.04); }"
+            )
+            self._expand_sidebar_btn.setFixedSize(24, 24)
+            self._expand_sidebar_btn.setIconSize(QtCore.QSize(14, 14))
+            self._expand_sidebar_btn.clicked.connect(self._toggle_settings)
+        if self._expand_sidebar_btn:
+            self._expand_sidebar_btn.setVisible(not left.isVisible())
+            self._position_expand_button()
 
     def _new_chat(self) -> None:
         self.session.reset_messages()
@@ -701,6 +825,31 @@ class ChatWindow(QtWidgets.QMainWindow):
     def scroll_to_bottom_if_needed(self) -> None:
         if self._auto_scroll_enabled:
             QtCore.QTimer.singleShot(0, lambda: self.chat_scroll.verticalScrollBar().setValue(self.chat_scroll.verticalScrollBar().maximum()))
+
+    # --- Responsive helpers ---
+    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        self._apply_responsive_sidebar()
+        if self._expand_sidebar_btn:
+            self._position_expand_button()
+
+    def _apply_responsive_sidebar(self) -> None:
+        # Keep behavior simple: do not auto-hide to avoid flicker; rely on user toggle
+        try:
+            sidebar = self.splitter.widget(0)
+            if self._expand_sidebar_btn:
+                self._expand_sidebar_btn.setVisible(not sidebar.isVisible())
+        except Exception:
+            pass
+
+    def _position_expand_button(self) -> None:
+        # Place near top-left edge of chat panel when sidebar hidden
+        if not self._expand_sidebar_btn:
+            return
+        geo = self.geometry()
+        x = 12
+        y = 12
+        self._expand_sidebar_btn.move(x, y)
 
 
 def run() -> None:
