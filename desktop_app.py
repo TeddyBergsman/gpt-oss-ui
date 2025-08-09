@@ -12,8 +12,9 @@ from ollama import chat as ollama_chat
 
 import config
 from system_prompts import SYSTEM_PROMPTS
-from core.chat_service import ChatSession, REASONING_OPTIONS
+from core.chat_service import ChatSession, ChatMessage, REASONING_OPTIONS
 from core.m2m_formatter import parse_m2m_output, format_m2m_to_markdown, is_m2m_format, debug_print_parsed_data
+from core.chat_persistence import ChatPersistence
 from theme import ThemeManager, setup_hidpi_and_font, setup_pre_qapp
 
 try:
@@ -547,6 +548,64 @@ class FixedSidebarSplitter(QtWidgets.QSplitter):
     def createHandle(self) -> QtWidgets.QSplitterHandle:  # type: ignore[override]
         return _NoDragHandle(self.orientation(), self)
 
+class ChatHistoryItem(QtWidgets.QWidget):
+    """A clickable chat history item in the sidebar."""
+    
+    clicked = QtCore.Signal(str)  # Emits chat ID when clicked
+    deleteRequested = QtCore.Signal(str)  # Emits chat ID when delete requested
+    
+    def __init__(self, chat_id: str, title: str, timestamp: str, message_count: int) -> None:
+        super().__init__()
+        self.chat_id = chat_id
+        self.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
+        self.setObjectName("chatHistoryItem")
+        
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(8)
+        
+        # Text info
+        text_layout = QtWidgets.QVBoxLayout()
+        text_layout.setSpacing(2)
+        
+        # Title
+        self.title_label = QtWidgets.QLabel(title)
+        self.title_label.setObjectName("chatHistoryTitle")
+        self.title_label.setWordWrap(True)
+        text_layout.addWidget(self.title_label)
+        
+        # Metadata
+        meta_text = f"{timestamp} · {message_count} messages"
+        self.meta_label = QtWidgets.QLabel(meta_text)
+        self.meta_label.setObjectName("chatHistoryMeta")
+        text_layout.addWidget(self.meta_label)
+        
+        layout.addLayout(text_layout, 1)
+        
+        # Delete button (hidden by default)
+        self.delete_btn = QtWidgets.QToolButton()
+        if qta:
+            self.delete_btn.setIcon(qta.icon("mdi.delete-outline"))
+        else:
+            self.delete_btn.setText("X")
+        self.delete_btn.setObjectName("chatHistoryDelete")
+        self.delete_btn.hide()
+        self.delete_btn.clicked.connect(lambda: self.deleteRequested.emit(self.chat_id))
+        layout.addWidget(self.delete_btn)
+        
+    def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
+            self.clicked.emit(self.chat_id)
+    
+    def enterEvent(self, event: QtCore.QEvent) -> None:
+        self.delete_btn.show()
+        super().enterEvent(event)
+    
+    def leaveEvent(self, event: QtCore.QEvent) -> None:
+        self.delete_btn.hide()
+        super().leaveEvent(event)
+
+
 class ChatWindow(QtWidgets.QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -562,11 +621,15 @@ class ChatWindow(QtWidgets.QMainWindow):
         self.selected_reasoning_index = 0
         self.add_special_message = False
         self.selected_model_index = 0  # Default to first model (gpt-oss:20b)
+        self.current_chat_id: Optional[str] = None  # Track current chat
 
         self.session = ChatSession(
             base_system_prompt=SYSTEM_PROMPTS[self.selected_prompt_index]["prompt"],
             model_name=config.AVAILABLE_MODELS[self.selected_model_index]["name"],
         )
+        
+        # Initialize chat persistence
+        self.chat_persistence = ChatPersistence()
 
         # --- UI ---
         central_widget = QtWidgets.QWidget(self)
@@ -668,13 +731,66 @@ class ChatWindow(QtWidgets.QMainWindow):
 
         card_layout.addLayout(form)
         sidebar_layout.addWidget(card)
-        sidebar_layout.addStretch(1)
-
+        
+        # Chat history section
+        history_card = QtWidgets.QFrame()
+        history_card.setObjectName("sidebarCard")
+        history_layout = QtWidgets.QVBoxLayout(history_card)
+        history_layout.setContentsMargins(16, 16, 16, 16)
+        history_layout.setSpacing(12)
+        
+        # History header with new chat button
+        history_header = QtWidgets.QHBoxLayout()
+        history_header.setContentsMargins(0, 0, 0, 0)
+        history_header.setSpacing(8)
+        if qta:
+            history_icon = QtWidgets.QLabel()
+            history_icon.setPixmap(qta.icon("mdi.history").pixmap(16, 16))
+            history_header.addWidget(history_icon)
+        history_title = QtWidgets.QLabel("Chat History")
+        history_title.setObjectName("sidebarTitle")
+        history_header.addWidget(history_title)
+        history_header.addStretch(1)
+        
+        # New chat button
+        self.new_chat_btn = QtWidgets.QToolButton()
+        if qta:
+            self.new_chat_btn.setIcon(qta.icon("mdi.plus"))
+        else:
+            self.new_chat_btn.setText("+")
+        self.new_chat_btn.setObjectName("newChatBtn")
+        self.new_chat_btn.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
+        self.new_chat_btn.clicked.connect(self._new_chat)
+        history_header.addWidget(self.new_chat_btn)
+        
+        history_layout.addLayout(history_header)
+        
+        # Chat list
+        self.chat_list_scroll = QtWidgets.QScrollArea()
+        self.chat_list_scroll.setObjectName("chatListScroll")
+        self.chat_list_scroll.setWidgetResizable(True)
+        self.chat_list_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.chat_list_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        
+        self.chat_list_widget = QtWidgets.QWidget()
+        self.chat_list_layout = QtWidgets.QVBoxLayout(self.chat_list_widget)
+        self.chat_list_layout.setContentsMargins(0, 0, 0, 0)
+        self.chat_list_layout.setSpacing(4)
+        self.chat_list_layout.addStretch(1)
+        
+        self.chat_list_scroll.setWidget(self.chat_list_widget)
+        history_layout.addWidget(self.chat_list_scroll, 1)
+        
+        sidebar_layout.addWidget(history_card, 1)  # Give it stretch factor to take remaining space
+        
         sidebar_container.setWidget(sidebar)
         splitter.addWidget(sidebar_container)
         # Widen to ensure no clipping of content even with right padding
         sidebar_container.setMinimumWidth(380)
         sidebar_container.setMaximumWidth(380)
+        
+        # Load chat history
+        self._refresh_chat_history()
 
         # Chat panel
         chat_panel = QtWidgets.QWidget()
@@ -758,7 +874,7 @@ class ChatWindow(QtWidgets.QMainWindow):
         QtCore.QTimer.singleShot(0, self._apply_responsive_sidebar)
         
         # Set initial model UI state
-        self._on_model_changed(self.selected_model_index)
+        self._update_ui_for_model(self.selected_model_index)
 
     def showEvent(self, event: QtGui.QShowEvent) -> None:  # type: ignore[override]
         super().showEvent(event)
@@ -796,20 +912,32 @@ class ChatWindow(QtWidgets.QMainWindow):
         print("=== End Toggle ===\n")
 
     def _on_prompt_changed(self, index: int) -> None:
+        # Don't do anything if this is the same prompt
+        if index == self.selected_prompt_index:
+            return
+            
+        # Save current chat if it has messages before switching prompts
+        if self.current_chat_id and len(self.session.messages) > 1:
+            self._save_current_chat(update_timestamp=False)
+        
         self.selected_prompt_index = index
-        self.session.base_system_prompt = SYSTEM_PROMPTS[index]["prompt"]
-        self.session.reset_messages()
+        
+        # Start a new chat with the new prompt
+        self.current_chat_id = None
+        self.session = ChatSession(
+            base_system_prompt=SYSTEM_PROMPTS[index]["prompt"],
+            model_name=config.AVAILABLE_MODELS[self.selected_model_index]["name"],
+        )
+        
         self._render_history()
+        self._refresh_chat_history()
 
     def _on_reasoning_changed(self, index: int) -> None:
         self.selected_reasoning_index = index
 
-    def _on_model_changed(self, index: int) -> None:
-        self.selected_model_index = index
-        model_info = config.AVAILABLE_MODELS[index]
-        
-        # Update the session's model
-        self.session.model_name = model_info["name"]
+    def _update_ui_for_model(self, model_index: int) -> None:
+        """Update UI elements based on model capabilities."""
+        model_info = config.AVAILABLE_MODELS[model_index]
         
         # Show/hide compliance checkbox based on model capabilities
         self.compliance_checkbox.setVisible(model_info["supports_compliance"])
@@ -820,12 +948,32 @@ class ChatWindow(QtWidgets.QMainWindow):
         # Show/hide reasoning dropdown based on model capabilities
         self.reasoning_combo.setVisible(model_info["supports_reasoning"])
         self.reasoning_label.setVisible(model_info["supports_reasoning"])
-        # No need to change reasoning index for non-reasoning models since
-        # we'll pass empty string to avoid GPT-specific logic
+
+    def _on_model_changed(self, index: int) -> None:
+        # Don't do anything if this is the same model
+        if index == self.selected_model_index:
+            return
+            
+        # Save current chat if it has messages before switching models
+        if self.current_chat_id and len(self.session.messages) > 1:
+            self._save_current_chat(update_timestamp=False)
         
-        # Reset the conversation when switching models
-        self.session.reset_messages()
+        self.selected_model_index = index
+        model_info = config.AVAILABLE_MODELS[index]
+        
+        # Start a new chat with the new model
+        self.current_chat_id = None
+        self.session = ChatSession(
+            base_system_prompt=SYSTEM_PROMPTS[self.selected_prompt_index]["prompt"],
+            model_name=model_info["name"],
+        )
+        
+        # Update UI for the new model
+        self._update_ui_for_model(index)
+        
+        # Render the new empty chat
         self._render_history()
+        self._refresh_chat_history()
 
     def _append_chat(self, role: str, content: str, thinking: Optional[str] = None) -> None:
         if role == "user":
@@ -950,6 +1098,10 @@ class ChatWindow(QtWidgets.QMainWindow):
             self._stream_thread.quit()
             self._stream_thread.wait()
         self.scroll_to_bottom_if_needed()
+        
+        # Auto-save the chat after each message exchange
+        self._save_current_chat()
+        self._refresh_chat_history()
 
     # --- Message helpers ---
     def _add_row(self, row: 'MessageRow') -> None:
@@ -996,8 +1148,170 @@ class ChatWindow(QtWidgets.QMainWindow):
                 self.sidebar_collapse_btn.move(12, 12)
 
     def _new_chat(self) -> None:
+        """Create a new chat session."""
+        # Save current chat if it has messages (without updating timestamp)
+        if self.current_chat_id and len(self.session.messages) > 1:
+            self._save_current_chat(update_timestamp=False)
+        
+        # Reset for new chat
+        self.current_chat_id = None
         self.session.reset_messages()
         self._render_history()
+        self._refresh_chat_history()
+    
+    def _save_current_chat(self, update_timestamp: bool = True) -> None:
+        """Save the current chat session."""
+        if len(self.session.messages) <= 1:  # Only system message
+            return
+        
+        # Prepare metadata with UI state
+        metadata = {
+            "compliance_enabled": self.add_special_message,
+            "selected_prompt_index": self.selected_prompt_index,
+            "selected_reasoning_index": self.selected_reasoning_index,
+            "selected_model_index": self.selected_model_index
+        }
+        
+        if self.current_chat_id:
+            # Update existing chat
+            self.chat_persistence.save_chat(self.session, self.current_chat_id, 
+                                           update_timestamp=update_timestamp, metadata=metadata)
+        else:
+            # Create new chat
+            self.current_chat_id = self.chat_persistence.save_chat(self.session, metadata=metadata)
+    
+    def _refresh_chat_history(self) -> None:
+        """Refresh the chat history list."""
+        # Clear existing items
+        while self.chat_list_layout.count() > 1:  # Keep the stretch
+            item = self.chat_list_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        
+        # Load and display chats
+        chats = self.chat_persistence.list_chats()
+        for chat in chats:
+            # Parse timestamp to make it human-readable
+            try:
+                dt = datetime.fromisoformat(chat["updated_at"])
+                timestamp = dt.strftime("%b %d, %H:%M")
+            except:
+                timestamp = "Unknown"
+            
+            chat_item = ChatHistoryItem(
+                chat_id=chat["id"],
+                title=chat["title"],
+                timestamp=timestamp,
+                message_count=chat["message_count"]
+            )
+            chat_item.clicked.connect(self._load_chat)
+            chat_item.deleteRequested.connect(self._delete_chat)
+            self.chat_list_layout.insertWidget(self.chat_list_layout.count() - 1, chat_item)
+    
+    def _load_chat(self, chat_id: str) -> None:
+        """Load a saved chat."""
+        # Save current chat if needed (without updating timestamp)
+        if self.current_chat_id and self.current_chat_id != chat_id and len(self.session.messages) > 1:
+            self._save_current_chat(update_timestamp=False)
+        
+        # Load the selected chat
+        chat_data = self.chat_persistence.load_chat(chat_id)
+        if not chat_data:
+            return
+        
+        # Reconstruct the session
+        self.current_chat_id = chat_id
+        self.session = ChatSession(
+            base_system_prompt=chat_data["base_system_prompt"],
+            model_name=chat_data["model_name"]
+        )
+        
+        # Restore messages
+        self.session.messages = []
+        for msg_data in chat_data["messages"]:
+            msg = ChatMessage(
+                role=msg_data["role"],
+                content=msg_data["content"],
+                thinking=msg_data.get("thinking")
+            )
+            self.session.messages.append(msg)
+        
+        # Restore metadata if available
+        metadata = chat_data.get("metadata", {})
+        
+        # Restore compliance state - always set it, defaulting to False if not in metadata
+        self.add_special_message = metadata.get("compliance_enabled", False)
+        self.compliance_checkbox.setChecked(self.add_special_message)
+        
+        # Update UI to match loaded chat's settings
+        # Block signals to prevent triggering change handlers
+        self.prompt_combo.blockSignals(True)
+        self.model_combo.blockSignals(True)
+        self.reasoning_combo.blockSignals(True)
+        
+        try:
+            # Find and set the system prompt
+            if "selected_prompt_index" in metadata:
+                self.selected_prompt_index = metadata["selected_prompt_index"]
+                self.prompt_combo.setCurrentIndex(self.selected_prompt_index)
+            else:
+                # Fallback to searching by prompt text
+                for i, prompt in enumerate(SYSTEM_PROMPTS):
+                    if prompt["prompt"] == chat_data["base_system_prompt"]:
+                        self.selected_prompt_index = i
+                        self.prompt_combo.setCurrentIndex(i)
+                        break
+            
+            # Find and set the model
+            if "selected_model_index" in metadata:
+                self.selected_model_index = metadata["selected_model_index"]
+                self.model_combo.setCurrentIndex(self.selected_model_index)
+            else:
+                # Fallback to searching by model name
+                for i, model in enumerate(config.AVAILABLE_MODELS):
+                    if model["name"] == chat_data["model_name"]:
+                        self.selected_model_index = i
+                        self.model_combo.setCurrentIndex(i)
+                        break
+            
+            # Restore reasoning index if available
+            if "selected_reasoning_index" in metadata:
+                self.selected_reasoning_index = metadata["selected_reasoning_index"]
+                self.reasoning_combo.setCurrentIndex(self.selected_reasoning_index)
+            
+            # Update UI based on loaded model
+            self._update_ui_for_model(self.selected_model_index)
+            
+        finally:
+            # Re-enable signals
+            self.prompt_combo.blockSignals(False)
+            self.model_combo.blockSignals(False)
+            self.reasoning_combo.blockSignals(False)
+        
+        # Render the loaded chat
+        self._render_history()
+        self._refresh_chat_history()
+    
+    def _delete_chat(self, chat_id: str) -> None:
+        """Delete a chat after confirmation."""
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            "Delete Chat",
+            "Are you sure you want to delete this chat?",
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.No
+        )
+        
+        if reply == QtWidgets.QMessageBox.StandardButton.Yes:
+            self.chat_persistence.delete_chat(chat_id)
+            
+            # If deleting current chat, start a new one
+            if self.current_chat_id == chat_id:
+                self.current_chat_id = None
+                self.session.reset_messages()
+                self._render_history()
+            
+            self._refresh_chat_history()
 
     # --- Scrolling helpers ---
     def _on_scroll(self) -> None:

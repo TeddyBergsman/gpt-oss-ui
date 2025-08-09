@@ -71,4 +71,51 @@ QLabel[meta="true"] { color: {{color_text_muted}}; font-size: 11px; }
 /* Toasts */
 QFrame.toast { background: rgba(17,24,39,0.95); border: 1px solid {{color_border}}; border-radius: {{radius_md}}; color: {{color_text}}; padding: 8px 12px; }
 
+/* Chat History */
+QScrollArea#chatListScroll { background: transparent; border: none; }
+QScrollArea#chatListScroll > QWidget > QWidget { background: transparent; }
+
+QWidget#chatHistoryItem { 
+    background: rgba(255,255,255,0.02); 
+    border: 1px solid transparent; 
+    border-radius: {{radius_sm}}; 
+    margin: 2px 0;
+}
+QWidget#chatHistoryItem:hover { 
+    background: rgba(255,255,255,0.05); 
+    border-color: {{color_border}};
+}
+
+QLabel#chatHistoryTitle { 
+    color: {{color_text}}; 
+    font-size: 13px; 
+}
+
+QLabel#chatHistoryMeta { 
+    color: {{color_text_muted}}; 
+    font-size: 11px; 
+}
+
+QToolButton#chatHistoryDelete {
+    background: transparent;
+    border: none;
+    color: {{color_text_muted}};
+    padding: 2px;
+}
+QToolButton#chatHistoryDelete:hover {
+    color: {{color_error}};
+}
+
+QToolButton#newChatBtn {
+    background: transparent;
+    border: 1px solid {{color_border}};
+    border-radius: {{radius_sm}};
+    padding: 2px;
+    color: {{color_text}};
+}
+QToolButton#newChatBtn:hover {
+    background: rgba(255,255,255,0.04);
+    border-color: {{color_accent}};
+}
+
 
