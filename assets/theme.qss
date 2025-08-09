@@ -17,6 +17,7 @@ QScrollArea#sidebarScroll > QWidget > QWidget { background: transparent; }
 QScrollArea#sidebarScroll, QScrollArea#sidebarScroll QWidget { outline: 0; border: none; }
 QWidget#sidebar { background: transparent; }
 QLabel#sidebarTitle { color: {{color_text}}; font-weight: 600; }
+QLabel:disabled { color: {{color_text_muted}}; }
 QLabel#sectionLabel { color: {{color_text_muted}}; font-size: 11px; letter-spacing: 0.12em; }
 
 /* Sidebar card */
@@ -24,9 +25,15 @@ QFrame#sidebarCard { background: rgba(255,255,255,0.02); border: 1px solid {{col
 QFrame#sidebarCard:hover { border-color: rgba(255,255,255,0.12); }
 QComboBox, QLineEdit, QTextEdit, QPlainTextEdit { background: #0d1117; color: {{color_text}}; border: 1px solid {{color_border}}; border-radius: {{radius_md}}; padding: 6px 8px; }
 QCheckBox { color: {{color_text}}; padding: 4px 2px; }
+QCheckBox:disabled { color: {{color_text_muted}}; }
 /* Restore a proper drop-down segment that respects rounded right corners */
 /* Robust combo styling to prevent right-edge clipping */
 QComboBox { padding-right: 30px; }
+QComboBox:disabled { 
+  background: rgba(255,255,255,0.02); 
+  color: {{color_text_muted}}; 
+  border-color: rgba(255,255,255,0.05);
+}
 QComboBox::drop-down {
   width: 28px;
   border: none;
@@ -44,6 +51,8 @@ QComboBox QScrollBar:vertical { background: #0b1020; width: 8px; margin: 0; }
 QComboBox QScrollBar::handle:vertical { background: rgba(255,255,255,0.12); border-radius: 4px; min-height: 16px; }
 QCheckBox::indicator { width: 16px; height: 16px; border-radius: 4px; border: 1px solid {{color_border}}; background: #0d1117; margin-right: 8px; }
 QCheckBox::indicator:checked { background: {{color_accent}}; border-color: {{color_accent}}; }
+QCheckBox::indicator:disabled { background: rgba(255,255,255,0.02); border-color: rgba(255,255,255,0.05); }
+QCheckBox::indicator:checked:disabled { background: rgba(59,130,246,0.3); border-color: rgba(59,130,246,0.3); }
 
 /* Scrollbars */
 QScrollBar:vertical { background: transparent; width: 10px; margin: 0; }

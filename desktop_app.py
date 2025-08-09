@@ -939,15 +939,15 @@ class ChatWindow(QtWidgets.QMainWindow):
         """Update UI elements based on model capabilities."""
         model_info = config.AVAILABLE_MODELS[model_index]
         
-        # Show/hide compliance checkbox based on model capabilities
-        self.compliance_checkbox.setVisible(model_info["supports_compliance"])
+        # Enable/disable compliance checkbox based on model capabilities
+        self.compliance_checkbox.setEnabled(model_info["supports_compliance"])
         if not model_info["supports_compliance"]:
             self.compliance_checkbox.setChecked(False)
             self.add_special_message = False
         
-        # Show/hide reasoning dropdown based on model capabilities
-        self.reasoning_combo.setVisible(model_info["supports_reasoning"])
-        self.reasoning_label.setVisible(model_info["supports_reasoning"])
+        # Enable/disable reasoning dropdown based on model capabilities
+        self.reasoning_combo.setEnabled(model_info["supports_reasoning"])
+        self.reasoning_label.setEnabled(model_info["supports_reasoning"])
 
     def _on_model_changed(self, index: int) -> None:
         # Don't do anything if this is the same model
