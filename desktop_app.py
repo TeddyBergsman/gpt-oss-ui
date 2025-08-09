@@ -519,10 +519,11 @@ class ChatWindow(QtWidgets.QMainWindow):
         self.selected_prompt_index = 0
         self.selected_reasoning_index = 0
         self.add_special_message = False
+        self.selected_model_index = 0  # Default to first model (gpt-oss:20b)
 
         self.session = ChatSession(
             base_system_prompt=SYSTEM_PROMPTS[self.selected_prompt_index]["prompt"],
-            model_name=config.MODEL_NAME,
+            model_name=config.AVAILABLE_MODELS[self.selected_model_index]["name"],
         )
 
         # --- UI ---
@@ -587,16 +588,26 @@ class ChatWindow(QtWidgets.QMainWindow):
         self.sidebar_collapse_btn.setVisible(True)
         card_layout.addLayout(header_row)
 
-        self.compliance_checkbox = QtWidgets.QCheckBox("Compliance Protocol")
-        self.compliance_checkbox.stateChanged.connect(self._on_toggle_compliance)
-        card_layout.addWidget(self.compliance_checkbox)
-
+        # Model picker at the top
         form = QtWidgets.QFormLayout()
         form.setFormAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop)
         form.setHorizontalSpacing(12)
         form.setVerticalSpacing(12)
         form.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
         form.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
+
+        # Model selector dropdown
+        model_names = [m["display_name"] for m in config.AVAILABLE_MODELS]
+        self.model_combo = QtWidgets.QComboBox()
+        self.model_combo.addItems(model_names)
+        self.model_combo.currentIndexChanged.connect(self._on_model_changed)
+        self._configure_combo(self.model_combo)
+        form.addRow("Model", self.model_combo)
+
+        # Compliance checkbox (only visible for gpt-oss)
+        self.compliance_checkbox = QtWidgets.QCheckBox("Compliance Protocol")
+        self.compliance_checkbox.stateChanged.connect(self._on_toggle_compliance)
+        form.addRow("", self.compliance_checkbox)
 
         prompt_names = [p["name"] for p in SYSTEM_PROMPTS]
         self.prompt_combo = QtWidgets.QComboBox()
@@ -605,11 +616,13 @@ class ChatWindow(QtWidgets.QMainWindow):
         self._configure_combo(self.prompt_combo)
         form.addRow("System Prompt", self.prompt_combo)
 
+        # Reasoning combo (only visible for reasoning models)
         self.reasoning_combo = QtWidgets.QComboBox()
         self.reasoning_combo.addItems(REASONING_OPTIONS)
         self.reasoning_combo.currentIndexChanged.connect(self._on_reasoning_changed)
         self._configure_combo(self.reasoning_combo)
-        form.addRow("Reasoning Effort", self.reasoning_combo)
+        self.reasoning_label = QtWidgets.QLabel("Reasoning Effort")
+        form.addRow(self.reasoning_label, self.reasoning_combo)
 
         card_layout.addLayout(form)
         sidebar_layout.addWidget(card)
@@ -701,6 +714,9 @@ class ChatWindow(QtWidgets.QMainWindow):
         # After first show/layout pass, re-sync visibility in case early resize
         # events ran before child widgets reported correct visibility
         QtCore.QTimer.singleShot(0, self._apply_responsive_sidebar)
+        
+        # Set initial model UI state
+        self._on_model_changed(self.selected_model_index)
 
     def showEvent(self, event: QtGui.QShowEvent) -> None:  # type: ignore[override]
         super().showEvent(event)
@@ -746,6 +762,29 @@ class ChatWindow(QtWidgets.QMainWindow):
     def _on_reasoning_changed(self, index: int) -> None:
         self.selected_reasoning_index = index
 
+    def _on_model_changed(self, index: int) -> None:
+        self.selected_model_index = index
+        model_info = config.AVAILABLE_MODELS[index]
+        
+        # Update the session's model
+        self.session.model_name = model_info["name"]
+        
+        # Show/hide compliance checkbox based on model capabilities
+        self.compliance_checkbox.setVisible(model_info["supports_compliance"])
+        if not model_info["supports_compliance"]:
+            self.compliance_checkbox.setChecked(False)
+            self.add_special_message = False
+        
+        # Show/hide reasoning dropdown based on model capabilities
+        self.reasoning_combo.setVisible(model_info["supports_reasoning"])
+        self.reasoning_label.setVisible(model_info["supports_reasoning"])
+        # No need to change reasoning index for non-reasoning models since
+        # we'll pass empty string to avoid GPT-specific logic
+        
+        # Reset the conversation when switching models
+        self.session.reset_messages()
+        self._render_history()
+
     def _append_chat(self, role: str, content: str, thinking: Optional[str] = None) -> None:
         if role == "user":
             row = MessageRow(role="user", title="You")
@@ -784,11 +823,19 @@ class ChatWindow(QtWidgets.QMainWindow):
 
         self._start_stream_thread(user_text)
     def _start_stream_thread(self, user_text: str) -> None:
-        reasoning_effort = REASONING_OPTIONS[self.selected_reasoning_index]
+        # Get current model info
+        model_info = config.AVAILABLE_MODELS[self.selected_model_index]
+        
+        # Only use reasoning effort if the model supports it
+        if model_info["supports_reasoning"]:
+            reasoning_effort = REASONING_OPTIONS[self.selected_reasoning_index]
+        else:
+            # For non-reasoning models, pass empty string to avoid GPT-specific logic
+            reasoning_effort = ""
 
         model_messages, model_options, message_to_send = self.session.build_stream_payload(
             user_input=user_text,
-            add_special_message=self.add_special_message,
+            add_special_message=self.add_special_message if model_info["supports_compliance"] else False,
             reasoning_effort=reasoning_effort,
         )
         

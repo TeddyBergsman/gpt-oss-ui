@@ -3,7 +3,23 @@ import base64
 from pathlib import Path
 
 # --- Constants ---
-MODEL_NAME = "gpt-oss:20b"
+MODEL_NAME = "gpt-oss:20b"  # Default model
+
+# Available models with their capabilities
+AVAILABLE_MODELS = [
+    {
+        "name": "gpt-oss:20b",
+        "display_name": "GPT-OSS 20B",
+        "supports_reasoning": True,
+        "supports_compliance": True,
+    },
+    {
+        "name": "gemma3:12b",
+        "display_name": "Gemma3 12B",
+        "supports_reasoning": False,
+        "supports_compliance": False,
+    },
+]
 
 # Use absolute paths for robustness
 _BASE_DIR = Path(__file__).resolve().parent

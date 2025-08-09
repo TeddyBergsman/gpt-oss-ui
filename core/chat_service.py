@@ -49,6 +49,7 @@ class ChatSession:
             message_to_send = user_input
 
         # If reasoning is "None", append the no-think prompt to the message being sent
+        # Skip this for non-reasoning models (empty string reasoning_effort)
         if reasoning_effort == "None":
             message_to_send += config.NOTHINK_PROMPT
 
