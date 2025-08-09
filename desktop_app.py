@@ -569,15 +569,22 @@ class ChatWindow(QtWidgets.QMainWindow):
         title_label.setObjectName("sidebarTitle")
         header_row.addWidget(title_label)
         header_row.addStretch(1)
-        # Collapser in top-right of sidebar
-        self.sidebar_collapse_btn = QtWidgets.QToolButton()
+        # Collapser positioned to match expander
+        self.sidebar_collapse_btn = QtWidgets.QToolButton(self)
         if qta:
             self.sidebar_collapse_btn.setIcon(qta.icon("mdi.chevron-left"))
         else:
             self.sidebar_collapse_btn.setText("<")
         self.sidebar_collapse_btn.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
+        self.sidebar_collapse_btn.setStyleSheet(
+            "QToolButton { border: 1px solid #242b36; border-radius: 12px; padding: 2px; background: rgba(255,255,255,0.04); }"
+        )
+        self.sidebar_collapse_btn.setFixedSize(24, 24)
         self.sidebar_collapse_btn.clicked.connect(self._toggle_settings)
-        header_row.addWidget(self.sidebar_collapse_btn)
+        # Position it at the same coordinates as the expander and set initial visibility
+        self.sidebar_collapse_btn.move(12, 12)
+        # Initially visible since sidebar starts visible
+        self.sidebar_collapse_btn.setVisible(True)
         card_layout.addLayout(header_row)
 
         self.compliance_checkbox = QtWidgets.QCheckBox("Compliance Protocol")
@@ -685,6 +692,8 @@ class ChatWindow(QtWidgets.QMainWindow):
             "QToolButton { border: 1px solid #242b36; border-radius: 12px; padding: 2px; background: rgba(255,255,255,0.04); }"
         )
         self._expand_sidebar_btn.setFixedSize(24, 24)
+        # Start hidden since sidebar is initially visible
+        self._expand_sidebar_btn.setVisible(False)
         self._expand_sidebar_btn.setIconSize(QtCore.QSize(14, 14))
         self._expand_sidebar_btn.clicked.connect(self._toggle_settings)
         self._expand_sidebar_btn.hide()
@@ -854,10 +863,12 @@ class ChatWindow(QtWidgets.QMainWindow):
         # Show/hide the left pane
         splitter: QtWidgets.QSplitter = self.splitter
         left = splitter.widget(0)
-        was_visible = left.isVisible()
-        left.setVisible(not was_visible)
-        if self._expand_sidebar_btn is None and was_visible:
-            # Lazily create expand button when first needed
+        is_visible = not left.isVisible()  # The new state we're switching to
+        left.setVisible(is_visible)
+        
+        # Ensure expand button exists
+        if self._expand_sidebar_btn is None:
+            # Create expand button if needed
             self._expand_sidebar_btn = QtWidgets.QToolButton(self)
             if qta:
                 self._expand_sidebar_btn.setIcon(qta.icon("mdi.chevron-right"))
@@ -870,9 +881,15 @@ class ChatWindow(QtWidgets.QMainWindow):
             self._expand_sidebar_btn.setFixedSize(24, 24)
             self._expand_sidebar_btn.setIconSize(QtCore.QSize(14, 14))
             self._expand_sidebar_btn.clicked.connect(self._toggle_settings)
-        if self._expand_sidebar_btn:
-            self._expand_sidebar_btn.setVisible(not left.isVisible())
             self._position_expand_button()
+        
+        # Update button visibility based on new sidebar state
+        if self._expand_sidebar_btn:
+            self._expand_sidebar_btn.setVisible(not is_visible)  # Show expand when sidebar is hidden
+        if hasattr(self, 'sidebar_collapse_btn'):
+            self.sidebar_collapse_btn.setVisible(is_visible)  # Show collapse when sidebar is visible
+            if is_visible:
+                self.sidebar_collapse_btn.move(12, 12)
 
     def _new_chat(self) -> None:
         self.session.reset_messages()
@@ -899,8 +916,11 @@ class ChatWindow(QtWidgets.QMainWindow):
         # Keep behavior simple: do not auto-hide to avoid flicker; rely on user toggle
         try:
             sidebar = self.splitter.widget(0)
+            sidebar_visible = sidebar.isVisible()
             if self._expand_sidebar_btn:
-                self._expand_sidebar_btn.setVisible(not sidebar.isVisible())
+                self._expand_sidebar_btn.setVisible(not sidebar_visible)
+            if hasattr(self, 'sidebar_collapse_btn'):
+                self.sidebar_collapse_btn.setVisible(sidebar_visible)
         except Exception:
             pass
 
