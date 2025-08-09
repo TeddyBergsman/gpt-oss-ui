@@ -675,7 +675,13 @@ class ChatWindow(QtWidgets.QMainWindow):
 
     # --- Slots ---
     def _on_toggle_compliance(self, state: int) -> None:
-        self.add_special_message = state == QtCore.Qt.CheckState.Checked
+        # Debug the state change
+        print(f"\n=== Compliance Toggle ===")
+        print(f"State value: {state}")
+        print(f"Qt.Checked value: {QtCore.Qt.CheckState.Checked}")
+        self.add_special_message = bool(state)  # Convert to boolean - any non-zero state means checked
+        print(f"add_special_message set to: {self.add_special_message}")
+        print("=== End Toggle ===\n")
 
     def _on_prompt_changed(self, index: int) -> None:
         self.selected_prompt_index = index
@@ -726,11 +732,18 @@ class ChatWindow(QtWidgets.QMainWindow):
     def _start_stream_thread(self, user_text: str) -> None:
         reasoning_effort = REASONING_OPTIONS[self.selected_reasoning_index]
 
-        model_messages, model_options, _ = self.session.build_stream_payload(
+        model_messages, model_options, message_to_send = self.session.build_stream_payload(
             user_input=user_text,
             add_special_message=self.add_special_message,
             reasoning_effort=reasoning_effort,
         )
+        
+        # Debug print what's being sent
+        print("\n=== Message sent to model ===")
+        print(f"Compliance: {self.add_special_message}")
+        print(f"Original text: {user_text}")
+        print(f"Transformed message: {message_to_send}")
+        print("=== End debug ===\n")
 
         # Prepare UI: add an Assistant bubble and stream text into it
         self._current_assistant_bubble = MessageRow(role="assistant", title="Assistant")
