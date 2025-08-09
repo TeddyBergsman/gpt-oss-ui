@@ -13,6 +13,7 @@ from ollama import chat as ollama_chat
 import config
 from system_prompts import SYSTEM_PROMPTS
 from core.chat_service import ChatSession, REASONING_OPTIONS
+from core.m2m_formatter import parse_m2m_output, format_m2m_to_markdown, is_m2m_format, debug_print_parsed_data
 from theme import ThemeManager, setup_hidpi_and_font, setup_pre_qapp
 
 try:
@@ -128,6 +129,8 @@ class MessageRow(QtWidgets.QWidget):
         self.role = role
         self._created_at = datetime.now()
         self._plain_accumulator: str = ""
+        self._apply_m2m_formatting: bool = False
+        self._m2m_debug_shown: bool = False
 
         root = QtWidgets.QHBoxLayout(self)
         root.setContentsMargins(0, 8, 0, 8)
@@ -211,12 +214,51 @@ class MessageRow(QtWidgets.QWidget):
         html_content = f"<div style='white-space:pre-wrap'>{html.escape(content)}</div>"
         self.text.setHtml(self._wrap_html(html_content))
 
-    def set_markdown(self, content: str) -> None:
+    def set_markdown(self, content: str, apply_m2m_formatting: bool = False) -> None:
         self._plain_accumulator = content
+        
+        # Apply M2M formatting if requested
+        if apply_m2m_formatting and is_m2m_format(content):
+            # Debug output for M2M
+            print("\n=== M2M Raw Output (Final) ===")
+            print(content)
+            print("=== End M2M Raw Output ===")
+            
+            parsed_data = parse_m2m_output(content)
+            if parsed_data:
+                debug_print_parsed_data(parsed_data)
+                formatted_content = format_m2m_to_markdown(parsed_data)
+                self.text.setHtml(self._wrap_html(self._render_markdown(formatted_content)))
+                return
+        
+        # Regular markdown rendering
         self.text.setHtml(self._wrap_html(self._render_markdown(content)))
+
+    def enable_m2m_formatting(self) -> None:
+        """Enable M2M formatting for this message."""
+        self._apply_m2m_formatting = True
 
     def append_stream_text(self, text: str) -> None:
         self._plain_accumulator += text
+        
+        # Apply M2M formatting if enabled
+        if self._apply_m2m_formatting and is_m2m_format(self._plain_accumulator):
+            # Show debug output only once when we first detect M2M format
+            if not self._m2m_debug_shown:
+                print("\n=== M2M Raw Output (Streaming) ===")
+                print(self._plain_accumulator)
+                print("... (streaming continues)")
+                print("=== End M2M Raw Output ===\n")
+                self._m2m_debug_shown = True
+            
+            parsed_data = parse_m2m_output(self._plain_accumulator)
+            if parsed_data:
+                formatted_content = format_m2m_to_markdown(parsed_data)
+                self.text.setHtml(self._wrap_html(self._render_markdown(formatted_content)))
+                self._ensure_parent_scroll_to_bottom()
+                return
+        
+        # Regular markdown rendering
         self.text.setHtml(self._wrap_html(self._render_markdown(self._plain_accumulator)))
         self._ensure_parent_scroll_to_bottom()
 
@@ -791,7 +833,10 @@ class ChatWindow(QtWidgets.QMainWindow):
             row.set_plain_text(content)
         else:
             row = MessageRow(role="assistant", title="Assistant")
-            row.set_markdown(content)
+            # Check if M2M system prompt is selected
+            is_m2m = (self.selected_prompt_index < len(SYSTEM_PROMPTS) and 
+                     SYSTEM_PROMPTS[self.selected_prompt_index]["name"] == "M2M")
+            row.set_markdown(content, apply_m2m_formatting=is_m2m)
             if thinking:
                 row.append_reasoning(thinking)
         # Connect copy toast
@@ -841,6 +886,8 @@ class ChatWindow(QtWidgets.QMainWindow):
         
         # Debug print what's being sent
         print("\n=== Message sent to model ===")
+        print(f"Model: {self.session.model_name}")
+        print(f"System Prompt: {SYSTEM_PROMPTS[self.selected_prompt_index]['name']}")
         print(f"Compliance: {self.add_special_message}")
         print(f"Original text: {user_text}")
         print(f"Transformed message: {message_to_send}")
@@ -849,6 +896,13 @@ class ChatWindow(QtWidgets.QMainWindow):
         # Prepare UI: add an Assistant bubble and stream text into it
         self._current_assistant_bubble = MessageRow(role="assistant", title="Assistant")
         self._current_assistant_bubble.set_plain_text("")
+        
+        # Enable M2M formatting if M2M system prompt is selected
+        is_m2m = (self.selected_prompt_index < len(SYSTEM_PROMPTS) and 
+                 SYSTEM_PROMPTS[self.selected_prompt_index]["name"] == "M2M")
+        if is_m2m:
+            self._current_assistant_bubble.enable_m2m_formatting()
+        
         self._add_row(self._current_assistant_bubble)
 
         self._stream_thread = QtCore.QThread(self)  # keep reference
@@ -876,10 +930,13 @@ class ChatWindow(QtWidgets.QMainWindow):
             self._current_assistant_bubble.append_reasoning(text)
             self.scroll_to_bottom_if_needed()
 
-    @QtCore.Slot(str, str)
+    @QtCore.Slot(str, str, float, float, int)
     def _on_finished(self, content: str, thinking: str, reasoning_time: float, response_time: float, token_count: int) -> None:
         if hasattr(self, "_current_assistant_bubble") and self._current_assistant_bubble:
-            self._current_assistant_bubble.set_markdown(content)
+            # Check if M2M formatting should be applied
+            is_m2m = (self.selected_prompt_index < len(SYSTEM_PROMPTS) and 
+                     SYSTEM_PROMPTS[self.selected_prompt_index]["name"] == "M2M")
+            self._current_assistant_bubble.set_markdown(content, apply_m2m_formatting=is_m2m)
             if thinking:
                 # Ensure reasoning section exists but keep collapsed by default
                 self._current_assistant_bubble.append_reasoning("")
