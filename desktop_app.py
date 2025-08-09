@@ -155,13 +155,22 @@ class MessageRow(QtWidgets.QWidget):
         content_wrap.setSpacing(4)
         self._content_wrap = content_wrap
 
+        # Header with title, timestamp, and optional stats
         header_layout = QtWidgets.QHBoxLayout()
         header_layout.setContentsMargins(0, 0, 0, 0)
         header_layout.setSpacing(6)
-        self.header = QtWidgets.QLabel(f"{title} • {self._created_at.strftime('%H:%M')}")
+        header_left = QtWidgets.QHBoxLayout()
+        header_left.setSpacing(6)
+        self.header = QtWidgets.QLabel(f"{title} · {self._created_at.strftime('%H:%M')}")
         self.header.setObjectName("msgHeader")
         self.header.setProperty("meta", True)
-        header_layout.addWidget(self.header)
+        header_left.addWidget(self.header)
+        self.stats_label = QtWidgets.QLabel()
+        self.stats_label.setObjectName("msgHeader")
+        self.stats_label.setProperty("meta", True)
+        self.stats_label.hide()
+        header_left.addWidget(self.stats_label)
+        header_layout.addLayout(header_left)
         header_layout.addStretch(1)
         self.copy_btn = QtWidgets.QToolButton()
         self.copy_btn.setObjectName("copyBtn")
@@ -352,6 +361,11 @@ class MessageRow(QtWidgets.QWidget):
         if not self.reasoning_toggle.isChecked():
             self.reasoning_toggle.setChecked(True)
             self._toggle_reasoning()
+            
+    def append_stats(self, stats: str) -> None:
+        """Add performance stats to the message header."""
+        self.stats_label.setText(f"· {stats}")
+        self.stats_label.show()
 
     def _ensure_parent_scroll_to_bottom(self) -> None:
         # Ask parent window to scroll if user is at bottom
@@ -365,18 +379,28 @@ class MessageRow(QtWidgets.QWidget):
 class StreamWorker(QtCore.QObject):
     token = QtCore.Signal(str)
     thinking = QtCore.Signal(str)
-    finished = QtCore.Signal(str, str)
+    finished = QtCore.Signal(str, str, float, float, int)  # content, thinking, reasoning_time, response_time, token_count
 
     def __init__(self, model_name: str, messages, options) -> None:
         super().__init__()
         self._model_name = model_name
         self._messages = messages
         self._options = options
+        self._token_count = 0
+        self._thinking_start = None
+        self._response_start = None
+        self._thinking_time = 0.0
+        self._response_time = 0.0
 
     @QtCore.Slot()
     def run(self) -> None:
+        from time import time
         full_response: list[str] = []
         full_thinking: list[str] = []
+        
+        self._thinking_start = time()
+        self._response_start = None
+        
         for chunk in ollama_chat(
             model=self._model_name,
             messages=self._messages,
@@ -385,12 +409,33 @@ class StreamWorker(QtCore.QObject):
         ):
             msg = chunk.get("message", {})
             if (thinking := msg.get("thinking")):
+                # Still in thinking phase
                 full_thinking.append(thinking)
                 self.thinking.emit(thinking)
             if (content := msg.get("content")):
+                # First content token marks end of thinking, start of response
+                if self._response_start is None:
+                    self._thinking_time = time() - self._thinking_start
+                    self._response_start = time()
                 full_response.append(content)
+                self._token_count += 1  # Rough approximation: each chunk is ~1 token
                 self.token.emit(content)
-        self.finished.emit("".join(full_response), "".join(full_thinking))
+        
+        # Calculate final timings
+        if self._response_start:
+            self._response_time = time() - self._response_start
+        else:
+            # No response phase (error?)
+            self._response_time = 0
+            self._thinking_time = time() - self._thinking_start
+            
+        self.finished.emit(
+            "".join(full_response),
+            "".join(full_thinking),
+            self._thinking_time,
+            self._response_time,
+            self._token_count
+        )
 
 class ToastOverlay(QtWidgets.QFrame):
     def __init__(self, parent: QtWidgets.QWidget) -> None:
@@ -776,12 +821,16 @@ class ChatWindow(QtWidgets.QMainWindow):
             self.scroll_to_bottom_if_needed()
 
     @QtCore.Slot(str, str)
-    def _on_finished(self, content: str, thinking: str) -> None:
+    def _on_finished(self, content: str, thinking: str, reasoning_time: float, response_time: float, token_count: int) -> None:
         if hasattr(self, "_current_assistant_bubble") and self._current_assistant_bubble:
             self._current_assistant_bubble.set_markdown(content)
             if thinking:
                 # Ensure reasoning section exists but keep collapsed by default
                 self._current_assistant_bubble.append_reasoning("")
+            # Add performance stats
+            tokens_per_sec = token_count / response_time if response_time > 0 else 0
+            stats = f"{reasoning_time:.1f}s (reasoning) · {response_time:.1f}s (responding) · {tokens_per_sec:.1f} tokens/s"
+            self._current_assistant_bubble.append_stats(stats)
             self._current_assistant_bubble = None
         self.session.add_assistant_message(content, thinking or None)
         if hasattr(self, "_stream_thread"):
