@@ -2430,7 +2430,7 @@ class ChatWindow(QtWidgets.QMainWindow):
             "<table border='1' cellspacing='0' cellpadding='5' style='border-collapse:collapse; border-spacing:0; width:100%; margin:4pt 0;'>",
             styled,
         )
-        # Smaller font size inside cells (9pt), consistent padding, visible borders, and consistent serif font
+        # Smaller font size inside cells (9pt), consistent padding, visible borders, consistent serif font
         styled = _re.sub(
             r"<th(?![^>]*style=)",
             "<th style='border-top:0; border-left:0; border-right:1px solid #aaa; border-bottom:1px solid #aaa; padding:5px 6px; text-align:left; font-size:9pt; line-height:1.3; vertical-align:top; font-family:\'Georgia\', \"Times New Roman\", Times, serif; font-weight:bold; font-style:normal;'",
@@ -2441,6 +2441,8 @@ class ChatWindow(QtWidgets.QMainWindow):
             "<td style='border-top:0; border-left:0; border-right:1px solid #aaa; border-bottom:1px solid #aaa; padding:5px 6px; font-size:9pt; line-height:1.3; vertical-align:top; font-family:\'Georgia\', \"Times New Roman\", Times, serif; font-weight:normal; font-style:normal;'",
             styled,
         )
+        # Normalize horizontal rules (---) from markdown to visible separators in PDF
+        styled = _re.sub(r"<hr\s*/?>", "<div style='border-top:1px solid #aaa; margin:8pt 0;'></div>", styled)
         # Do not inject additional breaks that could confuse Qt's list handling
         return styled
     
