@@ -2245,10 +2245,13 @@ class ChatWindow(QtWidgets.QMainWindow):
                             content = format_m2m_to_markdown(parsed_data)
                     
                     # Format answer with justified alignment
+                    # Note: Avoid adding top/bottom margins here because only the
+                    # first line would receive them (subsequent lines reset the
+                    # block format inside _insert_formatted_text), which causes an
+                    # extra blank gap after the first metadata line in PDF output.
+                    # Keep margins at zero for consistent spacing across all lines.
                     block_format = QTextBlockFormat()
                     block_format.setAlignment(Qt.AlignmentFlag.AlignJustify)
-                    block_format.setBottomMargin(10)
-                    block_format.setTopMargin(5)
                     cursor.setBlockFormat(block_format)
                     
                     char_format = QTextCharFormat()
@@ -2484,8 +2487,13 @@ class ChatWindow(QtWidgets.QMainWindow):
         # Convert italic
         html_text = re.sub(r'\*([^*]+)\*', r'<i>\1</i>', html_text)
         
-        # Convert line breaks
-        html_text = html_text.replace('\n', '<br/>')
+        # Convert line breaks - only for lines ending with two spaces (markdown convention)
+        # This prevents double spacing in PDF
+        lines = html_text.split('\n')
+        for i in range(len(lines) - 1):
+            if lines[i].endswith('  '):
+                lines[i] = lines[i].rstrip() + '<br/>'
+        html_text = ' '.join(lines)
         
         return html_text
 
