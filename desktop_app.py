@@ -290,6 +290,7 @@ class MessageRow(QtWidgets.QWidget):
           th, td { border: 1px solid #30363d; padding: 6px 8px; }
           blockquote { border-left:3px solid #30363d; padding-left:8px; color:#adb6c2; }
           a { color: #58a6ff; }
+          strong { color: #e6edf3; font-weight: 600; }
         </style>
         """
         return f"<html><head>{style}</head><body>{inner}</body></html>"
@@ -326,7 +327,7 @@ class MessageRow(QtWidgets.QWidget):
 
             html_out = markdown2.markdown(
                 protected,
-                extras=["fenced-code-blocks", "tables", "strike", "task_list", "code-friendly"],
+                extras=["fenced-code-blocks", "tables", "strike", "task_list", "code-friendly", "cuddled-lists", "markdown-in-html", "header-ids"],
             )  # type: ignore
 
             # Syntax highlight fenced code blocks

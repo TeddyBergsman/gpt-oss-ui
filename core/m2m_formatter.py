@@ -60,9 +60,22 @@ def parse_m2m_output(text: str) -> Dict[str, Any]:
     return data
 
 
+def format_key_path(key_path: str) -> str:
+    """Format a dot-separated and/or underscore-separated key path into a title."""
+    parts = key_path.split('.')
+    formatted_parts = []
+    for part in parts:
+        words = part.split('_')
+        formatted_parts.append(' '.join(word.capitalize() for word in words))
+    return '; '.join(formatted_parts)
+
 def format_value_as_title(value: str) -> str:
-    """Convert underscore_separated_value to Title Case."""
-    return ' '.join(word.capitalize() for word in value.split('_'))
+    """Convert a simple value to Title Case."""
+    if isinstance(value, dict):
+        # For nested dicts, format the innermost value
+        return format_value_as_title(next(iter(value.values())))
+    words = str(value).split('_')
+    return ' '.join(word.capitalize() for word in words)
 
 
 def format_m2m_to_markdown(data: Dict[str, Any]) -> str:
@@ -99,39 +112,27 @@ def format_m2m_to_markdown(data: Dict[str, Any]) -> str:
         else:
             metadata[key] = value
     
-    # Format metadata section (without extra header)
-    if metadata:
-        for key, value in metadata.items():
-            formatted_key = format_value_as_title(key)
-            formatted_value = format_value_as_title(str(value))
-            md_lines.append(f"**{formatted_key}:** {formatted_value}  ")
-        md_lines.append("")  # Empty line
-    
-    # Format list sections (minimal - just show key and items)
-    for key, items in lists.items():
-        formatted_key = format_value_as_title(key)
-        md_lines.append(f"**{formatted_key}:**")
-        md_lines.append("")  # Blank line needed for markdown to recognize the list
-        for item in items:
-            formatted_item = format_value_as_title(item)
-            md_lines.append(f"- {formatted_item}")
-        md_lines.append("")  # Empty line
-    
-    # Format nested data sections (minimal)
-    for key, nested in nested_data.items():
-        # Instead of nested structure, format as "Parent; Child"
-        for subkey, subvalue in nested.items():
-            formatted_full_key = f"{format_value_as_title(key)}; {format_value_as_title(subkey)}"
-            if isinstance(subvalue, list):
-                md_lines.append(f"**{formatted_full_key}:**")
+    def format_nested_dict(prefix: str, data: Dict[str, Any]) -> None:
+        """Recursively format nested dictionary data."""
+        for key, value in data.items():
+            current_path = f"{prefix}.{key}" if prefix else key
+            if isinstance(value, dict):
+                format_nested_dict(current_path, value)
+            elif isinstance(value, list):
+                formatted_key = format_key_path(current_path)
+                md_lines.append(f"**{formatted_key}:**")
                 md_lines.append("")  # Blank line for list
-                for item in subvalue:
-                    md_lines.append(f"- {format_value_as_title(item)}")
+                for item in value:
+                    formatted_item = format_value_as_title(item)
+                    md_lines.append(f"- {formatted_item}")
                 md_lines.append("")
             else:
-                formatted_value = format_value_as_title(str(subvalue))
-                md_lines.append(f"**{formatted_full_key}:** {formatted_value}  ")
-        md_lines.append("")
+                formatted_key = format_key_path(current_path)
+                formatted_value = format_value_as_title(value)
+                md_lines.append(f"**{formatted_key}:** {formatted_value}  ")
+    
+    # Format all data using the recursive helper
+    format_nested_dict("", data)
     
     return '\n'.join(md_lines).strip()
 
@@ -147,9 +148,24 @@ def is_m2m_format(text: str) -> bool:
     has_colon = ':' in text
     has_pipe = '|' in text
     has_underscore = '_' in text
-    no_spaces_in_values = not bool(re.search(r':\s*[^|]*\s+[^|]*', text))
+    has_dot = '.' in text
     
-    return has_colon and (has_pipe or has_underscore) and no_spaces_in_values
+    # Check if it looks like M2M format:
+    # 1. Must have a colon (key:value separator)
+    # 2. Must have pipes (multiple pairs) OR dots (nested keys) OR underscores (compound words)
+    # 3. Shouldn't have spaces after colons (except in quoted strings, but we'll keep it simple)
+    no_spaces_in_values = not bool(re.search(r':\s+', text))
+    
+    # Simple M2M patterns: key:value, key.subkey:value, key_name:value
+    if has_colon and (has_pipe or has_dot or has_underscore) and no_spaces_in_values:
+        return True
+    
+    # Even simpler pattern: just key:value with no spaces
+    simple_pattern = re.match(r'^[a-zA-Z0-9_]+:[a-zA-Z0-9_]+$', text.strip())
+    if simple_pattern:
+        return True
+        
+    return False
 
 
 def debug_print_parsed_data(data: Dict[str, Any]) -> None:
