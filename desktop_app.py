@@ -2137,14 +2137,16 @@ class ChatWindow(QtWidgets.QMainWindow):
             
             # Standard document styles
             document.setDefaultStyleSheet("""
-                body { font-family: 'Inter', 'Helvetica Neue', Arial, sans-serif; font-size: 11pt; color: #333; }
-                h1 { font-size: 20pt; font-weight: bold; margin-bottom: 12pt; }
-                h2 { font-size: 16pt; font-weight: bold; margin-top: 16pt; margin-bottom: 8pt; color: #2e7d32; }
-                h3 { font-size: 14pt; font-weight: bold; margin-top: 12pt; margin-bottom: 6pt; }
+                body { font-family: 'Georgia', 'Times New Roman', Times, serif; font-size: 10.5pt; color: #333; }
+                h1 { font-size: 10.5pt; font-weight: bold; margin-bottom: 12pt; }
+                h2 { font-size: 10.5pt; font-weight: bold; margin-top: 16pt; margin-bottom: 8pt; color: #2e7d32; }
+                h3 { font-size: 10.5pt; font-weight: bold; margin-top: 12pt; margin-bottom: 6pt; }
                 p { margin-bottom: 8pt; line-height: 1.5; }
-                .meta { color: #666; font-size: 10pt; }
+                .meta { color: #666; font-size: 10.5pt; }
                 .user { color: #1976d2; }
                 .assistant { color: #2e7d32; }
+                .userContent { font-size: 11pt; }
+                .assistantContent { font-size: 10.5pt; }
                 .thinking { background-color: #f5f5f5; padding: 8pt; border-left: 3pt solid #ccc; font-style: italic; }
                 pre { background-color: #f8f8f8; padding: 8pt; border: 1pt solid #ddd; font-family: monospace; }
                 ul, li { margin-bottom: 4pt; }
@@ -2160,7 +2162,7 @@ class ChatWindow(QtWidgets.QMainWindow):
             first_qa = True
             
             # Set default font for the document
-            font = QtGui.QFont("Georgia", 12)
+            font = QtGui.QFont("Georgia", 10)
             document.setDefaultFont(font)
             
             for msg in self.session.messages:
@@ -2211,7 +2213,7 @@ class ChatWindow(QtWidgets.QMainWindow):
                     cursor.setBlockFormat(block_format)
                     
                     char_format = QTextCharFormat()
-                    char_format.setFont(QtGui.QFont("Georgia", 16))
+                    char_format.setFont(QtGui.QFont("Georgia", 11))
                     char_format.setForeground(QtGui.QColor("#b0b0b0"))
                     cursor.setCharFormat(char_format)
                     
@@ -2255,7 +2257,7 @@ class ChatWindow(QtWidgets.QMainWindow):
                     cursor.setBlockFormat(block_format)
                     
                     char_format = QTextCharFormat()
-                    char_format.setFont(QtGui.QFont("Georgia", 12))
+                    char_format.setFont(QtGui.QFont("Georgia", 11))
                     char_format.setForeground(QtGui.QColor("#2c2c2c"))
                     cursor.setCharFormat(char_format)
                     
@@ -2324,12 +2326,30 @@ class ChatWindow(QtWidgets.QMainWindow):
         html_fragment = MessageRow._render_markdown(markdown_text)
         return self._style_tables_for_pdf(html_fragment)
     
+    
+    
     def _style_tables_for_pdf(self, html_fragment: str) -> str:
-        """Ensure tables have visible borders/padding in PDF output without altering M2M logic."""
+        """Ensure tables render cleanly in PDF: no gaps between borders and slightly smaller text."""
         import re as _re
-        styled = _re.sub(r"<table(?![^>]*style=)", "<table style='border-collapse:collapse; width:100%'", html_fragment)
-        styled = _re.sub(r"<th(?![^>]*style=)", "<th style='border:1px solid #aaa; padding:6px 8px; text-align:left;'", styled)
-        styled = _re.sub(r"<td(?![^>]*style=)", "<td style='border:1px solid #aaa; padding:6px 8px;'", styled)
+        # Remove gaps between cell borders and keep layout tight.
+        # Prefer old-school HTML attributes because Qt's rich text engine
+        # honors these more reliably than CSS.
+        styled = _re.sub(
+            r"<table>",
+            "<table border='1' cellspacing='0' cellpadding='5' style='border-collapse:collapse; border-spacing:0; width:100%'>",
+            html_fragment,
+        )
+        # Smaller font size inside cells (9pt), consistent padding, visible borders, and consistent serif font
+        styled = _re.sub(
+            r"<th(?![^>]*style=)",
+            "<th style='border-top:0; border-left:0; border-right:1px solid #aaa; border-bottom:1px solid #aaa; padding:5px 6px; text-align:left; font-size:9pt; line-height:1.3; vertical-align:top; font-family:\'Georgia\', \"Times New Roman\", Times, serif; font-weight:700;'",
+            styled,
+        )
+        styled = _re.sub(
+            r"<td(?![^>]*style=)",
+            "<td style='border-top:0; border-left:0; border-right:1px solid #aaa; border-bottom:1px solid #aaa; padding:5px 6px; font-size:9pt; line-height:1.3; vertical-align:top; font-family:\'Georgia\', \"Times New Roman\", Times, serif; font-weight:400;'",
+            styled,
+        )
         return styled
     
     def _literary_markdown_to_html(self, markdown_text: str) -> str:
