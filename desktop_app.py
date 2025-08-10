@@ -2260,7 +2260,13 @@ class ChatWindow(QtWidgets.QMainWindow):
                     cursor.setCharFormat(char_format)
                     
                     # Insert formatted content
-                    self._insert_formatted_text(cursor, content, char_format)
+                    # Keep existing flow for M2M-formatted content
+                    if is_m2m_prompt and is_m2m_format(msg.content):
+                        self._insert_formatted_text(cursor, content, char_format)
+                    else:
+                        # Use full markdown rendering for non-M2M to support tables and rich MD
+                        content_html = self._markdown_to_pdf_html(content)
+                        cursor.insertHtml(content_html)
         else:
             # Standard formatting with headers
             cursor.insertHtml(f"<h1>Chat Export</h1>")
@@ -2294,8 +2300,12 @@ class ChatWindow(QtWidgets.QMainWindow):
                         if parsed_data:
                             content = format_m2m_to_markdown(parsed_data)
                     
-                    # Convert markdown to basic HTML
-                    content_html = self._simple_markdown_to_html(content)
+                    # Convert markdown to HTML
+                    # Keep existing flow for M2M-formatted content
+                    if is_m2m_prompt and is_m2m_format(msg.content):
+                        content_html = self._simple_markdown_to_html(content)
+                    else:
+                        content_html = self._markdown_to_pdf_html(content)
                     cursor.insertHtml(f"<div>{content_html}</div>")
                     
                 elif msg.role == "system" and include_system:
@@ -2307,6 +2317,20 @@ class ChatWindow(QtWidgets.QMainWindow):
         
         # Print to PDF
         document.print_(printer)
+    
+    def _markdown_to_pdf_html(self, markdown_text: str) -> str:
+        """Render markdown to HTML suitable for QTextDocument/PDF, with table styling."""
+        # Reuse the chat UI renderer which supports tables, fenced code, etc.
+        html_fragment = MessageRow._render_markdown(markdown_text)
+        return self._style_tables_for_pdf(html_fragment)
+    
+    def _style_tables_for_pdf(self, html_fragment: str) -> str:
+        """Ensure tables have visible borders/padding in PDF output without altering M2M logic."""
+        import re as _re
+        styled = _re.sub(r"<table(?![^>]*style=)", "<table style='border-collapse:collapse; width:100%'", html_fragment)
+        styled = _re.sub(r"<th(?![^>]*style=)", "<th style='border:1px solid #aaa; padding:6px 8px; text-align:left;'", styled)
+        styled = _re.sub(r"<td(?![^>]*style=)", "<td style='border:1px solid #aaa; padding:6px 8px;'", styled)
+        return styled
     
     def _literary_markdown_to_html(self, markdown_text: str) -> str:
         """Convert markdown to HTML with a more literary style."""
