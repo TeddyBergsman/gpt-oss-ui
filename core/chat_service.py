@@ -80,18 +80,8 @@ class ChatSession:
         # Add current user message
         user_msg = {"role": "user", "content": message_to_send}
         # Get images from the last user message if any
-        print(f"[chat_service] Debug - Number of messages: {len(self.messages)}")
-        if self.messages:
-            last_msg = self.messages[-1]
-            print(f"[chat_service] Debug - Last message: role={last_msg.role}, has content={bool(last_msg.content)}, images count={len(last_msg.images)}")
-            if last_msg.images:
-                print(f"[chat_service] Debug - First image data length: {len(last_msg.images[0]['data']) if last_msg.images[0].get('data') else 'No data key'}")
-        
         if self.messages and self.messages[-1].role == "user" and self.messages[-1].images:
             user_msg["images"] = [img["data"] for img in self.messages[-1].images]
-            print(f"[chat_service] Adding {len(self.messages[-1].images)} images to user message")
-        else:
-            print(f"[chat_service] No images to add. Last message role: {self.messages[-1].role if self.messages else 'No messages'}, has images: {bool(self.messages[-1].images) if self.messages and self.messages[-1].role == 'user' else False}")
         model_messages.append(user_msg)
 
         return model_messages, model_options, message_to_send

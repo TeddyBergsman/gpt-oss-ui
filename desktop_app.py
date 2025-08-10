@@ -95,6 +95,16 @@ class GrowingPlainTextEdit(QtWidgets.QPlainTextEdit):
             e.accept()
             self.sendRequested.emit()
             return
+        # Handle paste events
+        if e.matches(QtGui.QKeySequence.StandardKey.Paste):
+            # Let the paste event handler in the parent window handle image paste
+            parent = self.parent()
+            while parent and not isinstance(parent, QtWidgets.QMainWindow):
+                parent = parent.parent()
+            if parent and hasattr(parent, '_handle_paste'):
+                if parent._handle_paste():
+                    e.accept()
+                    return
         super().keyPressEvent(e)
 
     def resizeEvent(self, event: QtGui.QResizeEvent) -> None:  # type: ignore[override]
@@ -511,18 +521,6 @@ class StreamWorker(QtCore.QObject):
         
         self._thinking_start = time()
         self._response_start = None
-        
-        # Debug: Check if images are being sent
-        print(f"\n=== StreamWorker Debug ===")
-        print(f"Model: {self._model_name}")
-        print(f"Number of messages: {len(self._messages)}")
-        if self._messages:
-            last_msg = self._messages[-1]
-            print(f"Last message role: {last_msg.get('role')}")
-            print(f"Last message has images: {'images' in last_msg}")
-            if 'images' in last_msg:
-                print(f"Number of images: {len(last_msg['images'])}")
-        print("=== End StreamWorker Debug ===\n")
         
         for chunk in ollama_chat(
             model=self._model_name,
@@ -1142,18 +1140,8 @@ class ChatWindow(QtWidgets.QMainWindow):
         self.input_edit.clear()
 
         # Display user message immediately with images if any
-        print(f"\n=== _on_send Debug ===")
-        print(f"Number of selected images: {len(self.selected_images)}")
-        if self.selected_images:
-            print(f"First image length: {len(self.selected_images[0]['data'])}")
-        
         self.session.add_user_message(user_text, self.selected_images)
         self._append_chat("user", user_text, images=self.selected_images)
-        
-        # Debug: Check if images were stored in session
-        if self.session.messages and self.session.messages[-1].role == "user":
-            print(f"Images stored in last message: {len(self.session.messages[-1].images)}")
-        print("=== End _on_send Debug ===\n")
         
         # Clear selected images after sending
         self._clear_selected_images()
@@ -1176,22 +1164,7 @@ class ChatWindow(QtWidgets.QMainWindow):
             reasoning_effort=reasoning_effort,
         )
         
-        # Debug print what's being sent
-        print("\n=== Message sent to model ===")
-        print(f"Model: {self.session.model_name}")
-        print(f"System Prompt: {SYSTEM_PROMPTS[self.selected_prompt_index]['name']}")
-        print(f"Compliance: {self.add_special_message}")
-        print(f"Original text: {user_text}")
-        print(f"Transformed message: {message_to_send}")
-        print(f"Number of messages: {len(model_messages)}")
-        # Check if last message has images
-        if model_messages and "images" in model_messages[-1]:
-            print(f"Images in last message: {len(model_messages[-1]['images'])}")
-            for i, img in enumerate(model_messages[-1]['images']):
-                print(f"  Image {i}: {img[:50]}... (length: {len(img)})")
-        else:
-            print("No images in last message")
-        print("=== End debug ===\n")
+
 
         # Prepare UI: add an Assistant bubble and stream text into it
         self._current_assistant_bubble = MessageRow(role="assistant", title="Assistant")
@@ -1384,7 +1357,8 @@ class ChatWindow(QtWidgets.QMainWindow):
             msg = ChatMessage(
                 role=msg_data["role"],
                 content=msg_data["content"],
-                thinking=msg_data.get("thinking")
+                thinking=msg_data.get("thinking"),
+                images=msg_data.get("images", [])
             )
             self.session.messages.append(msg)
         
@@ -1617,6 +1591,70 @@ class ChatWindow(QtWidgets.QMainWindow):
         """Clear all selected images."""
         self.selected_images.clear()
         self._update_image_preview()
+    
+    def _handle_paste(self) -> bool:
+        """Handle paste event to check for images in clipboard."""
+        # Check if current model supports images
+        model_info = config.AVAILABLE_MODELS[self.selected_model_index]
+        if not model_info.get("supports_images", False):
+            return False  # Let default paste handle text
+        
+        clipboard = QtWidgets.QApplication.clipboard()
+        mime_data = clipboard.mimeData()
+        
+        # Check if clipboard contains an image
+        if mime_data.hasImage():
+            image = clipboard.image()
+            if not image.isNull():
+                # Convert QImage to base64
+                byte_array = QtCore.QByteArray()
+                buffer = QtCore.QBuffer(byte_array)
+                buffer.open(QtCore.QIODevice.OpenModeFlag.WriteOnly)
+                
+                # Save as PNG by default
+                image.save(buffer, "PNG")
+                buffer.close()
+                
+                # Convert to base64
+                import base64
+                base64_data = base64.b64encode(byte_array.data()).decode('utf-8')
+                
+                # Add to selected images
+                self.selected_images.append({
+                    "data": base64_data,
+                    "type": "image/png",
+                    "path": "clipboard_image.png"
+                })
+                
+                # Update preview
+                self._update_image_preview()
+                
+                # Show a brief toast
+                self._toast.show_message("Image pasted from clipboard")
+                
+                return True  # We handled the paste
+        
+        # Check if clipboard contains image URLs or file paths
+        if mime_data.hasUrls():
+            urls = mime_data.urls()
+            images_added = 0
+            
+            for url in urls:
+                if url.isLocalFile():
+                    file_path = url.toLocalFile()
+                    # Check if it's an image file
+                    if file_path.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp')):
+                        try:
+                            self._add_image_from_path(file_path)
+                            images_added += 1
+                        except Exception:
+                            pass  # Silently skip invalid files
+            
+            if images_added > 0:
+                self._toast.show_message(f"{images_added} image{'s' if images_added > 1 else ''} pasted")
+                return True
+        
+        return False  # Let default paste behavior handle text
 
 
 def run() -> None:
