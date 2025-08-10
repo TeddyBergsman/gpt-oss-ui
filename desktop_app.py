@@ -2397,7 +2397,21 @@ class ChatWindow(QtWidgets.QMainWindow):
         """Render markdown to HTML suitable for QTextDocument/PDF, with table styling."""
         # Reuse the chat UI renderer which supports tables, fenced code, etc.
         html_fragment = MessageRow._render_markdown(markdown_text)
-        return self._style_tables_for_pdf(html_fragment)
+        styled = self._style_tables_for_pdf(html_fragment)
+        # Split into table and non-table segments; force non-table segments to normal weight
+        import re as _re
+        parts = _re.split(r"(<table[\s\S]*?</table>)", styled, flags=_re.IGNORECASE)
+        normalized_segments: list[str] = []
+        for idx, seg in enumerate(parts):
+            if not seg:
+                continue
+            if idx % 2 == 1 and seg.lower().startswith("<table"):
+                # table segment
+                normalized_segments.append(seg)
+            else:
+                # non-table segment
+                normalized_segments.append(f"<div style='font-weight: normal'>{seg}</div>")
+        return ''.join(normalized_segments)
     
     
     
@@ -2419,12 +2433,12 @@ class ChatWindow(QtWidgets.QMainWindow):
         # Smaller font size inside cells (9pt), consistent padding, visible borders, and consistent serif font
         styled = _re.sub(
             r"<th(?![^>]*style=)",
-            "<th style='border-top:0; border-left:0; border-right:1px solid #aaa; border-bottom:1px solid #aaa; padding:5px 6px; text-align:left; font-size:9pt; line-height:1.3; vertical-align:top; font-family:\'Georgia\', \"Times New Roman\", Times, serif; font-weight:700;'",
+            "<th style='border-top:0; border-left:0; border-right:1px solid #aaa; border-bottom:1px solid #aaa; padding:5px 6px; text-align:left; font-size:9pt; line-height:1.3; vertical-align:top; font-family:\'Georgia\', \"Times New Roman\", Times, serif; font-weight:bold; font-style:normal;'",
             styled,
         )
         styled = _re.sub(
             r"<td(?![^>]*style=)",
-            "<td style='border-top:0; border-left:0; border-right:1px solid #aaa; border-bottom:1px solid #aaa; padding:5px 6px; font-size:9pt; line-height:1.3; vertical-align:top; font-family:\'Georgia\', \"Times New Roman\", Times, serif; font-weight:400;'",
+            "<td style='border-top:0; border-left:0; border-right:1px solid #aaa; border-bottom:1px solid #aaa; padding:5px 6px; font-size:9pt; line-height:1.3; vertical-align:top; font-family:\'Georgia\', \"Times New Roman\", Times, serif; font-weight:normal; font-style:normal;'",
             styled,
         )
         # Do not inject additional breaks that could confuse Qt's list handling
