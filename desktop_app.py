@@ -2407,10 +2407,14 @@ class ChatWindow(QtWidgets.QMainWindow):
         # Remove gaps between cell borders and keep layout tight.
         # Prefer old-school HTML attributes because Qt's rich text engine
         # honors these more reliably than CSS.
+        # Ensure visible spacing before and after tables by inserting small spacer divs
+        styled = _re.sub(r"(<table>)", r"<div style='height:4pt'></div>\1", html_fragment)
+        styled = _re.sub(r"</table>", "</table><div style='height:4pt'></div>", styled)
+        # Add compact margins as a secondary safeguard (kept small)
         styled = _re.sub(
             r"<table>",
-            "<table border='1' cellspacing='0' cellpadding='5' style='border-collapse:collapse; border-spacing:0; width:100%; margin:8pt 0;'>",
-            html_fragment,
+            "<table border='1' cellspacing='0' cellpadding='5' style='border-collapse:collapse; border-spacing:0; width:100%; margin:4pt 0;'>",
+            styled,
         )
         # Smaller font size inside cells (9pt), consistent padding, visible borders, and consistent serif font
         styled = _re.sub(
@@ -2423,6 +2427,7 @@ class ChatWindow(QtWidgets.QMainWindow):
             "<td style='border-top:0; border-left:0; border-right:1px solid #aaa; border-bottom:1px solid #aaa; padding:5px 6px; font-size:9pt; line-height:1.3; vertical-align:top; font-family:\'Georgia\', \"Times New Roman\", Times, serif; font-weight:400;'",
             styled,
         )
+        # Do not inject additional breaks that could confuse Qt's list handling
         return styled
     
     def _literary_markdown_to_html(self, markdown_text: str) -> str:
