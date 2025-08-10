@@ -626,6 +626,86 @@ class FixedSidebarSplitter(QtWidgets.QSplitter):
     def createHandle(self) -> QtWidgets.QSplitterHandle:  # type: ignore[override]
         return _NoDragHandle(self.orientation(), self)
 
+class ImagePreviewWidget(QtWidgets.QFrame):
+    """Image preview widget with hover-based remove button."""
+    
+    removeRequested = QtCore.Signal(int)
+    imageClicked = QtCore.Signal(object)  # Emits the QPixmap
+    
+    def __init__(self, index: int, image_info: Dict[str, str]) -> None:
+        super().__init__()
+        self.index = index
+        self.setObjectName("imagePreview")
+        self.setFixedSize(80, 80)
+        self.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.ArrowCursor))
+        
+        # Main layout
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        
+        # Image label
+        self.image_label = QtWidgets.QLabel()
+        self.image_label.setFixedSize(80, 80)
+        self.image_label.setScaledContents(False)
+        self.image_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.image_label.setStyleSheet("QLabel { background: transparent; }")
+        
+        # Load and display the image
+        self.original_pixmap = QtGui.QPixmap()
+        self.original_pixmap.loadFromData(QtCore.QByteArray.fromBase64(image_info["data"].encode()))
+        if not self.original_pixmap.isNull():
+            # Scale to fit while maintaining aspect ratio (leaving room for border)
+            scaled_pixmap = self.original_pixmap.scaled(72, 72, QtCore.Qt.AspectRatioMode.KeepAspectRatio, 
+                                         QtCore.Qt.TransformationMode.SmoothTransformation)
+            self.image_label.setPixmap(scaled_pixmap)
+            # Make image clickable for full view
+            self.image_label.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
+        
+        # Remove button (hidden by default)
+        self.remove_btn = QtWidgets.QPushButton("✕")
+        self.remove_btn.setObjectName("imageRemoveBtn")
+        self.remove_btn.setFixedSize(24, 24)
+        self.remove_btn.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
+        self.remove_btn.clicked.connect(lambda: self.removeRequested.emit(self.index))
+        
+        layout.addWidget(self.image_label)
+        
+        # Position remove button in top-right corner (after adding image to layout)
+        self.remove_btn.setParent(self)
+        self.remove_btn.move(58, -2)  # Slightly overlap the corner
+        self.remove_btn.raise_()
+        self.remove_btn.hide()  # Hidden by default
+    
+    def enterEvent(self, event: QtCore.QEvent) -> None:
+        """Show remove button on hover."""
+        self.remove_btn.show()
+        self.remove_btn.raise_()  # Ensure it's on top
+        super().enterEvent(event)
+    
+    def leaveEvent(self, event: QtCore.QEvent) -> None:
+        """Hide remove button when not hovering."""
+        self.remove_btn.hide()
+        super().leaveEvent(event)
+    
+    def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
+        """Handle clicks on the image to show full view."""
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
+            # Check if click is on the remove button first
+            if self.remove_btn.isVisible() and self.remove_btn.geometry().contains(event.pos()):
+                # Let the remove button handle the click
+                super().mousePressEvent(event)
+                return
+            
+            # Check if click is on the image area
+            image_rect = self.image_label.geometry()
+            if image_rect.contains(event.pos()):
+                self.imageClicked.emit(self.original_pixmap)
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+
 class ChatHistoryItem(QtWidgets.QWidget):
     """A clickable chat history item in the sidebar."""
     
@@ -1535,51 +1615,16 @@ class ChatWindow(QtWidgets.QMainWindow):
         
         # Add new previews
         for i, image_info in enumerate(self.selected_images):
-            preview_widget = self._create_image_preview(i, image_info)
+            preview_widget = ImagePreviewWidget(i, image_info)
+            # Use lambda with default argument to capture the current index
+            preview_widget.removeRequested.connect(lambda idx, i=i: self._remove_image(i))
+            preview_widget.imageClicked.connect(self._show_full_image)
             self.image_preview_inner_layout.insertWidget(i, preview_widget)
         
         # Show/hide preview container
         self.image_preview_container.setVisible(len(self.selected_images) > 0)
     
-    def _create_image_preview(self, index: int, image_info: Dict[str, str]) -> QtWidgets.QWidget:
-        """Create an image preview widget."""
-        container = QtWidgets.QFrame()
-        container.setObjectName("imagePreview")
-        container.setFixedSize(80, 80)
-        
-        layout = QtWidgets.QVBoxLayout(container)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-        
-        # Image label
-        image_label = QtWidgets.QLabel()
-        image_label.setFixedSize(80, 80)
-        image_label.setScaledContents(True)
-        image_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        
-        # Load and display the image
-        pixmap = QtGui.QPixmap()
-        pixmap.loadFromData(QtCore.QByteArray.fromBase64(image_info["data"].encode()))
-        if not pixmap.isNull():
-            # Scale to fit while maintaining aspect ratio
-            scaled_pixmap = pixmap.scaled(80, 80, QtCore.Qt.AspectRatioMode.KeepAspectRatio, 
-                                         QtCore.Qt.TransformationMode.SmoothTransformation)
-            image_label.setPixmap(scaled_pixmap)
-        
-        # Remove button
-        remove_btn = QtWidgets.QPushButton("×")
-        remove_btn.setObjectName("imageRemoveBtn")
-        remove_btn.setFixedSize(20, 20)
-        remove_btn.clicked.connect(lambda: self._remove_image(index))
-        
-        # Position remove button in top-right corner
-        remove_btn.setParent(container)
-        remove_btn.move(60, 0)
-        remove_btn.raise_()
-        
-        layout.addWidget(image_label)
-        
-        return container
+
     
     def _remove_image(self, index: int) -> None:
         """Remove an image from the selection."""
@@ -1591,6 +1636,34 @@ class ChatWindow(QtWidgets.QMainWindow):
         """Clear all selected images."""
         self.selected_images.clear()
         self._update_image_preview()
+    
+    def _show_full_image(self, pixmap: QtGui.QPixmap) -> None:
+        """Show full size image in a dialog."""
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Image")
+        dialog.setModal(True)
+        
+        layout = QtWidgets.QVBoxLayout(dialog)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Create scrollable image viewer
+        scroll = QtWidgets.QScrollArea()
+        image_label = QtWidgets.QLabel()
+        image_label.setPixmap(pixmap)
+        scroll.setWidget(image_label)
+        
+        layout.addWidget(scroll)
+        
+        # Set dialog size to 80% of screen or image size, whichever is smaller
+        screen = QtWidgets.QApplication.primaryScreen().geometry()
+        max_width = int(screen.width() * 0.8)
+        max_height = int(screen.height() * 0.8)
+        
+        dialog_width = min(pixmap.width() + 20, max_width)
+        dialog_height = min(pixmap.height() + 20, max_height)
+        dialog.resize(dialog_width, dialog_height)
+        
+        dialog.exec()
     
     def _handle_paste(self) -> bool:
         """Handle paste event to check for images in clipboard."""
