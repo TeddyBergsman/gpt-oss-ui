@@ -1875,6 +1875,23 @@ class ChatWindow(QtWidgets.QMainWindow):
         layout.addWidget(self.export_include_system)
         layout.addWidget(self.export_include_thinking)
         
+        # PDF style option (only show for PDF)
+        self.pdf_style_group = QtWidgets.QGroupBox("PDF Style")
+        pdf_style_layout = QtWidgets.QVBoxLayout(self.pdf_style_group)
+        self.pdf_minimalist_radio = QtWidgets.QRadioButton("Minimalist Literary")
+        self.pdf_minimalist_radio.setChecked(True)
+        self.pdf_minimalist_radio.setToolTip("Beautiful serif typography with centered questions,\nelegant separators, and justified answers")
+        self.pdf_standard_radio = QtWidgets.QRadioButton("Standard Format")
+        self.pdf_standard_radio.setToolTip("Traditional format with headers, labels, and metadata")
+        pdf_style_layout.addWidget(self.pdf_minimalist_radio)
+        pdf_style_layout.addWidget(self.pdf_standard_radio)
+        layout.addWidget(self.pdf_style_group)
+        # Hide by default, show only for PDF
+        self.pdf_style_group.hide()
+        
+        # Connect radio button to show/hide PDF options
+        self.export_pdf_radio.toggled.connect(lambda checked: self.pdf_style_group.setVisible(checked))
+        
         # Buttons
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.StandardButton.Ok | 
@@ -1927,10 +1944,12 @@ class ChatWindow(QtWidgets.QMainWindow):
             # Export based on format
             if format_type == "pdf":
                 # PDF export uses a different approach
+                use_minimalist = self.pdf_minimalist_radio.isChecked() if hasattr(self, 'pdf_minimalist_radio') else True
                 self._export_as_pdf(
                     file_path,
                     include_system=self.export_include_system.isChecked(),
-                    include_thinking=self.export_include_thinking.isChecked()
+                    include_thinking=self.export_include_thinking.isChecked(),
+                    minimalist_style=use_minimalist
                 )
             else:
                 # Text-based exports
@@ -2091,10 +2110,11 @@ class ChatWindow(QtWidgets.QMainWindow):
         
         return "\n".join(lines)
     
-    def _export_as_pdf(self, file_path: str, include_system: bool, include_thinking: bool) -> None:
+    def _export_as_pdf(self, file_path: str, include_system: bool, include_thinking: bool, minimalist_style: bool = True) -> None:
         """Export chat as PDF using Qt's printing functionality."""
         from PySide6.QtPrintSupport import QPrinter
-        from PySide6.QtGui import QTextDocument, QTextCursor
+        from PySide6.QtGui import QTextDocument, QTextCursor, QTextBlockFormat, QTextCharFormat
+        from PySide6.QtCore import Qt
         from core.m2m_formatter import is_m2m_format, parse_m2m_output, format_m2m_to_markdown
         
         # Create printer and set output format
@@ -2102,79 +2122,315 @@ class ChatWindow(QtWidgets.QMainWindow):
         printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
         printer.setOutputFileName(file_path)
         printer.setPageSize(QtGui.QPageSize(QtGui.QPageSize.PageSizeId.A4))
-        printer.setPageMargins(QtCore.QMarginsF(20, 20, 20, 20), QtGui.QPageLayout.Unit.Millimeter)
         
         # Create document
         document = QTextDocument()
         cursor = QTextCursor(document)
         
-        # Set document styles
-        document.setDefaultStyleSheet("""
-            body { font-family: 'Inter', 'Helvetica Neue', Arial, sans-serif; font-size: 11pt; color: #333; }
-            h1 { font-size: 20pt; font-weight: bold; margin-bottom: 12pt; }
-            h2 { font-size: 16pt; font-weight: bold; margin-top: 16pt; margin-bottom: 8pt; color: #2e7d32; }
-            h3 { font-size: 14pt; font-weight: bold; margin-top: 12pt; margin-bottom: 6pt; }
-            p { margin-bottom: 8pt; line-height: 1.5; }
-            .meta { color: #666; font-size: 10pt; }
-            .user { color: #1976d2; }
-            .assistant { color: #2e7d32; }
-            .thinking { background-color: #f5f5f5; padding: 8pt; border-left: 3pt solid #ccc; font-style: italic; }
-            pre { background-color: #f8f8f8; padding: 8pt; border: 1pt solid #ddd; font-family: monospace; }
-            ul, li { margin-bottom: 4pt; }
-            b { font-weight: bold; }
-        """)
-        
-        # Add header
-        cursor.insertHtml(f"<h1>Chat Export</h1>")
-        cursor.insertHtml(f"<p class='meta'><b>Date:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}<br/>")
-        cursor.insertHtml(f"<b>Model:</b> {self.session.model_name}<br/>")
-        cursor.insertHtml(f"<b>System Prompt:</b> {SYSTEM_PROMPTS[self.selected_prompt_index]['name']}</p>")
-        cursor.insertHtml("<hr/>")
+        if minimalist_style:
+            # Wider margins for a more literary feel
+            printer.setPageMargins(QtCore.QMarginsF(35, 35, 35, 35), QtGui.QPageLayout.Unit.Millimeter)
+        else:
+            # Standard margins
+            printer.setPageMargins(QtCore.QMarginsF(20, 20, 20, 20), QtGui.QPageLayout.Unit.Millimeter)
+            
+            # Standard document styles
+            document.setDefaultStyleSheet("""
+                body { font-family: 'Inter', 'Helvetica Neue', Arial, sans-serif; font-size: 11pt; color: #333; }
+                h1 { font-size: 20pt; font-weight: bold; margin-bottom: 12pt; }
+                h2 { font-size: 16pt; font-weight: bold; margin-top: 16pt; margin-bottom: 8pt; color: #2e7d32; }
+                h3 { font-size: 14pt; font-weight: bold; margin-top: 12pt; margin-bottom: 6pt; }
+                p { margin-bottom: 8pt; line-height: 1.5; }
+                .meta { color: #666; font-size: 10pt; }
+                .user { color: #1976d2; }
+                .assistant { color: #2e7d32; }
+                .thinking { background-color: #f5f5f5; padding: 8pt; border-left: 3pt solid #ccc; font-style: italic; }
+                pre { background-color: #f8f8f8; padding: 8pt; border: 1pt solid #ddd; font-family: monospace; }
+                ul, li { margin-bottom: 4pt; }
+                b { font-weight: bold; }
+            """)
         
         # Check if M2M system prompt is being used
         is_m2m_prompt = (self.selected_prompt_index < len(SYSTEM_PROMPTS) and 
                         SYSTEM_PROMPTS[self.selected_prompt_index]["name"] == "M2M")
         
-        # Add messages
-        for msg in self.session.messages:
-            if msg.role == "system" and not include_system:
-                continue
+        if minimalist_style:
+            # Minimalist formatting using Qt's native formatting
+            first_qa = True
             
-            if msg.role == "user":
-                cursor.insertHtml(f"<h2 class='user'>User</h2>")
-                # Convert content to HTML, preserving line breaks
-                content_html = html.escape(msg.content).replace('\n', '<br/>')
-                cursor.insertHtml(f"<p>{content_html}</p>")
-                if msg.images:
-                    cursor.insertHtml(f"<p class='meta'><i>[{len(msg.images)} image(s) attached]</i></p>")
+            # Set default font for the document
+            font = QtGui.QFont("Georgia", 12)
+            document.setDefaultFont(font)
+            
+            for msg in self.session.messages:
+                if msg.role == "system":
+                    continue  # Skip system messages for minimalist format
+                
+                if msg.role == "user":
+                    # Add spacing between Q&A pairs (except for the first one)
+                    if not first_qa:
+                        cursor.insertBlock()
+                        cursor.insertBlock()
+                        cursor.insertBlock()
+                    else:
+                        first_qa = False
                     
-            elif msg.role == "assistant":
-                cursor.insertHtml(f"<h2 class='assistant'>Assistant</h2>")
-                if include_thinking and msg.thinking:
-                    cursor.insertHtml("<h3>Thinking</h3>")
-                    thinking_html = html.escape(msg.thinking).replace('\n', '<br/>')
-                    cursor.insertHtml(f"<div class='thinking'>{thinking_html}</div>")
-                
-                # Apply M2M formatting if needed
-                content = msg.content
-                if is_m2m_prompt and is_m2m_format(content):
-                    parsed_data = parse_m2m_output(content)
-                    if parsed_data:
-                        content = format_m2m_to_markdown(parsed_data)
-                
-                # Convert markdown to basic HTML
-                content_html = self._simple_markdown_to_html(content)
-                cursor.insertHtml(f"<div>{content_html}</div>")
-                
-            elif msg.role == "system" and include_system:
-                cursor.insertHtml("<h2>System</h2>")
-                system_html = html.escape(msg.content).replace('\n', '<br/>')
-                cursor.insertHtml(f"<pre>{system_html}</pre>")
+                    # Format question with centered, italic style
+                    block_format = QTextBlockFormat()
+                    block_format.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    block_format.setTopMargin(20)
+                    block_format.setBottomMargin(15)
+                    cursor.setBlockFormat(block_format)
+                    
+                    char_format = QTextCharFormat()
+                    char_format.setFont(QtGui.QFont("Georgia", 13))
+                    char_format.setFontItalic(True)
+                    char_format.setForeground(QtGui.QColor("#4a4a4a"))
+                    cursor.setCharFormat(char_format)
+                    
+                    cursor.insertText(msg.content)
+                    
+                    # Add image indicator if present
+                    if msg.images:
+                        cursor.insertBlock()
+                        char_format = QTextCharFormat()
+                        char_format.setFont(QtGui.QFont("Georgia", 10))
+                        char_format.setFontItalic(True)
+                        char_format.setForeground(QtGui.QColor("#8a8a8a"))
+                        cursor.setCharFormat(char_format)
+                        cursor.insertText(f"[{len(msg.images)} image{'s' if len(msg.images) > 1 else ''} attached]")
+                    
+                    cursor.insertBlock()
+                    
+                    # Add elegant separator - using tilde
+                    block_format = QTextBlockFormat()
+                    block_format.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    block_format.setTopMargin(5)
+                    block_format.setBottomMargin(8)
+                    cursor.setBlockFormat(block_format)
+                    
+                    char_format = QTextCharFormat()
+                    char_format.setFont(QtGui.QFont("Georgia", 16))
+                    char_format.setForeground(QtGui.QColor("#b0b0b0"))
+                    cursor.setCharFormat(char_format)
+                    
+                    cursor.insertText("~")
+                    cursor.insertBlock()
+                        
+                elif msg.role == "assistant":
+                    # Handle thinking if included
+                    if include_thinking and msg.thinking:
+                        block_format = QTextBlockFormat()
+                        block_format.setAlignment(Qt.AlignmentFlag.AlignLeft)
+                        block_format.setLeftMargin(40)
+                        block_format.setRightMargin(40)
+                        block_format.setTopMargin(10)
+                        cursor.setBlockFormat(block_format)
+                        
+                        char_format = QTextCharFormat()
+                        char_format.setFont(QtGui.QFont("Georgia", 11))
+                        char_format.setFontItalic(True)
+                        char_format.setForeground(QtGui.QColor("#6a6a6a"))
+                        cursor.setCharFormat(char_format)
+                        
+                        cursor.insertText(msg.thinking)
+                        cursor.insertBlock()
+                    
+                    # Apply M2M formatting if needed
+                    content = msg.content
+                    if is_m2m_prompt and is_m2m_format(content):
+                        parsed_data = parse_m2m_output(content)
+                        if parsed_data:
+                            content = format_m2m_to_markdown(parsed_data)
+                    
+                    # Format answer with justified alignment
+                    block_format = QTextBlockFormat()
+                    block_format.setAlignment(Qt.AlignmentFlag.AlignJustify)
+                    block_format.setBottomMargin(10)
+                    block_format.setTopMargin(5)
+                    cursor.setBlockFormat(block_format)
+                    
+                    char_format = QTextCharFormat()
+                    char_format.setFont(QtGui.QFont("Georgia", 12))
+                    char_format.setForeground(QtGui.QColor("#2c2c2c"))
+                    cursor.setCharFormat(char_format)
+                    
+                    # Insert formatted content
+                    self._insert_formatted_text(cursor, content, char_format)
+        else:
+            # Standard formatting with headers
+            cursor.insertHtml(f"<h1>Chat Export</h1>")
+            cursor.insertHtml(f"<p class='meta'><b>Date:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}<br/>")
+            cursor.insertHtml(f"<b>Model:</b> {self.session.model_name}<br/>")
+            cursor.insertHtml(f"<b>System Prompt:</b> {SYSTEM_PROMPTS[self.selected_prompt_index]['name']}</p>")
+            cursor.insertHtml("<hr/>")
             
-            cursor.insertHtml("<br/>")
+            for msg in self.session.messages:
+                if msg.role == "system" and not include_system:
+                    continue
+                
+                if msg.role == "user":
+                    cursor.insertHtml(f"<h2 class='user'>User</h2>")
+                    content_html = html.escape(msg.content).replace('\n', '<br/>')
+                    cursor.insertHtml(f"<p>{content_html}</p>")
+                    if msg.images:
+                        cursor.insertHtml(f"<p class='meta'><i>[{len(msg.images)} image(s) attached]</i></p>")
+                        
+                elif msg.role == "assistant":
+                    cursor.insertHtml(f"<h2 class='assistant'>Assistant</h2>")
+                    if include_thinking and msg.thinking:
+                        cursor.insertHtml("<h3>Thinking</h3>")
+                        thinking_html = html.escape(msg.thinking).replace('\n', '<br/>')
+                        cursor.insertHtml(f"<div class='thinking'>{thinking_html}</div>")
+                    
+                    # Apply M2M formatting if needed
+                    content = msg.content
+                    if is_m2m_prompt and is_m2m_format(content):
+                        parsed_data = parse_m2m_output(content)
+                        if parsed_data:
+                            content = format_m2m_to_markdown(parsed_data)
+                    
+                    # Convert markdown to basic HTML
+                    content_html = self._simple_markdown_to_html(content)
+                    cursor.insertHtml(f"<div>{content_html}</div>")
+                    
+                elif msg.role == "system" and include_system:
+                    cursor.insertHtml("<h2>System</h2>")
+                    system_html = html.escape(msg.content).replace('\n', '<br/>')
+                    cursor.insertHtml(f"<pre>{system_html}</pre>")
+                
+                cursor.insertHtml("<br/>")
         
         # Print to PDF
         document.print_(printer)
+    
+    def _literary_markdown_to_html(self, markdown_text: str) -> str:
+        """Convert markdown to HTML with a more literary style."""
+        import re
+        
+        # Start with the basic conversion
+        html_text = self._simple_markdown_to_html(markdown_text)
+        
+        # Additional formatting for a more literary feel
+        # Add drop caps for paragraphs that start with a capital letter (optional, commented out)
+        # html_text = re.sub(r'<p>([A-Z])', r'<p><span class="dropcap">\1</span>', html_text)
+        
+        # Ensure proper paragraph spacing
+        html_text = re.sub(r'<br/><br/>', '</p><p>', html_text)
+        if not html_text.startswith('<p>'):
+            html_text = f'<p>{html_text}'
+        if not html_text.endswith('</p>'):
+            html_text = f'{html_text}</p>'
+        
+        return html_text
+    
+    def _insert_formatted_text(self, cursor: QtGui.QTextCursor, text: str, base_format: QtGui.QTextCharFormat) -> None:
+        """Insert text with markdown formatting using Qt's native formatting."""
+        import re
+        from PySide6.QtGui import QTextCharFormat, QTextBlockFormat
+        
+        # Process the text line by line
+        lines = text.split('\n')
+        
+        for i, line in enumerate(lines):
+            # Reset to base format for each line
+            cursor.setCharFormat(base_format)
+            
+            # Skip empty lines but still insert a block (only if not the first line)
+            if not line.strip():
+                if i < len(lines) - 1 and i > 0:
+                    cursor.insertBlock()
+                continue
+            
+            # Handle headers
+            if line.startswith('# '):
+                # Apply block format only if not first line
+                if i > 0:
+                    block_format = QTextBlockFormat()
+                    block_format.setTopMargin(8)
+                    block_format.setBottomMargin(3)
+                    cursor.setBlockFormat(block_format)
+                
+                format = QTextCharFormat(base_format)
+                format.setFontPointSize(18)
+                format.setFontWeight(QtGui.QFont.Weight.Bold)
+                cursor.setCharFormat(format)
+                cursor.insertText(line[2:].strip())
+            elif line.startswith('## '):
+                # Apply block format only if not first line
+                if i > 0:
+                    block_format = QTextBlockFormat()
+                    block_format.setTopMargin(6)
+                    block_format.setBottomMargin(2)
+                    cursor.setBlockFormat(block_format)
+                
+                format = QTextCharFormat(base_format)
+                format.setFontPointSize(16)
+                format.setFontWeight(QtGui.QFont.Weight.Bold)
+                cursor.setCharFormat(format)
+                cursor.insertText(line[3:].strip())
+            elif line.startswith('### '):
+                # Apply block format only if not first line
+                if i > 0:
+                    block_format = QTextBlockFormat()
+                    block_format.setTopMargin(4)
+                    block_format.setBottomMargin(2)
+                    cursor.setBlockFormat(block_format)
+                
+                format = QTextCharFormat(base_format)
+                format.setFontPointSize(14)
+                format.setFontWeight(QtGui.QFont.Weight.Bold)
+                cursor.setCharFormat(format)
+                cursor.insertText(line[4:].strip())
+            elif line.startswith('- ') or line.startswith('* '):
+                # Handle list items
+                cursor.insertText('    • ' + line[2:].strip())
+            else:
+                # Handle inline formatting
+                self._insert_inline_formatted_text(cursor, line, base_format)
+            
+            # Add line break except for last line
+            if i < len(lines) - 1:
+                # Reset block format for normal line spacing
+                block_format = QTextBlockFormat()
+                cursor.insertBlock(block_format)
+    
+    def _insert_inline_formatted_text(self, cursor: QtGui.QTextCursor, text: str, base_format: QtGui.QTextCharFormat) -> None:
+        """Insert text with inline markdown formatting (bold, italic, code)."""
+        import re
+        from PySide6.QtGui import QTextCharFormat
+        
+        # Pattern to match markdown elements (improved to handle nested cases better)
+        pattern = r'(\*\*[^*]+?\*\*|\*[^*\n]+?\*|`[^`\n]+?`)'
+        parts = re.split(pattern, text)
+        
+        for part in parts:
+            if not part:
+                continue
+                
+            if part.startswith('**') and part.endswith('**'):
+                # Bold
+                format = QTextCharFormat(base_format)
+                format.setFontWeight(QtGui.QFont.Weight.Bold)
+                cursor.setCharFormat(format)
+                cursor.insertText(part[2:-2])
+            elif part.startswith('*') and part.endswith('*'):
+                # Italic
+                format = QTextCharFormat(base_format)
+                format.setFontItalic(True)
+                cursor.setCharFormat(format)
+                cursor.insertText(part[1:-1])
+            elif part.startswith('`') and part.endswith('`'):
+                # Code
+                format = QTextCharFormat(base_format)
+                format.setFontFamily("Courier New")
+                format.setBackground(QtGui.QColor("#f5f5f5"))
+                cursor.setCharFormat(format)
+                cursor.insertText(part[1:-1])
+            else:
+                # Regular text
+                cursor.setCharFormat(base_format)
+                cursor.insertText(part)
     
     def _simple_markdown_to_html(self, markdown_text: str) -> str:
         """Convert basic markdown to HTML for PDF export."""

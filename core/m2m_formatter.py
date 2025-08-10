@@ -32,22 +32,30 @@ def parse_m2m_output(text: str) -> Dict[str, Any]:
         key = key.strip()
         value = value.strip()
         
-        # Check if value is a comma-separated list
-        if ',' in value:
-            # Parse as list
-            items = [item.strip() for item in value.split(',')]
-            data[key] = items
-        elif '.' in key:
-            # Handle nested keys (parent.child:value)
+        # First handle nested keys (parent.child:value)
+        if '.' in key:
             parts = key.split('.')
             current = data
             for part in parts[:-1]:
                 if part not in current:
                     current[part] = {}
                 current = current[part]
-            current[parts[-1]] = value
+            
+            # Now handle the value for the nested key
+            if ',' in value:
+                # Parse as list
+                items = [item.strip() for item in value.split(',')]
+                current[parts[-1]] = items
+            else:
+                current[parts[-1]] = value
         else:
-            data[key] = value
+            # Handle non-nested keys
+            if ',' in value:
+                # Parse as list
+                items = [item.strip() for item in value.split(',')]
+                data[key] = items
+            else:
+                data[key] = value
     
     return data
 
@@ -111,19 +119,18 @@ def format_m2m_to_markdown(data: Dict[str, Any]) -> str:
     
     # Format nested data sections (minimal)
     for key, nested in nested_data.items():
-        formatted_key = format_value_as_title(key)
-        md_lines.append(f"**{formatted_key}:**")
-        md_lines.append("")  # Blank line for proper formatting
+        # Instead of nested structure, format as "Parent; Child"
         for subkey, subvalue in nested.items():
-            formatted_subkey = format_value_as_title(subkey)
+            formatted_full_key = f"{format_value_as_title(key)}; {format_value_as_title(subkey)}"
             if isinstance(subvalue, list):
-                md_lines.append(f"  **{formatted_subkey}:**")
-                md_lines.append("")  # Blank line for sublist
+                md_lines.append(f"**{formatted_full_key}:**")
+                md_lines.append("")  # Blank line for list
                 for item in subvalue:
-                    md_lines.append(f"    - {format_value_as_title(item)}")
+                    md_lines.append(f"- {format_value_as_title(item)}")
+                md_lines.append("")
             else:
                 formatted_value = format_value_as_title(str(subvalue))
-                md_lines.append(f"  **{formatted_subkey}:** {formatted_value}")
+                md_lines.append(f"**{formatted_full_key}:** {formatted_value}  ")
         md_lines.append("")
     
     return '\n'.join(md_lines).strip()
