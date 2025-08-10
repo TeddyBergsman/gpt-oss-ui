@@ -12,12 +12,14 @@ AVAILABLE_MODELS = [
         "display_name": "GPT-OSS 20B",
         "supports_reasoning": True,
         "supports_compliance": True,
+        "supports_images": False,
     },
     {
         "name": "gemma3:12b",
         "display_name": "Gemma3 12B",
         "supports_reasoning": False,
         "supports_compliance": False,
+        "supports_images": True,
     },
 ]
 

@@ -127,4 +127,38 @@ QToolButton#newChatBtn:hover {
     border-color: {{color_accent}};
 }
 
+/* Image preview container */
+QFrame#imagePreviewContainer {
+    background: rgba(255,255,255,0.02);
+    border: 1px solid {{color_border}};
+    border-radius: {{radius_md}};
+    margin: 0 8px;
+}
+
+/* Image preview items */
+QFrame#imagePreview {
+    background: rgba(255,255,255,0.05);
+    border: 1px solid {{color_border}};
+    border-radius: {{radius_sm}};
+}
+
+/* Image remove button */
+QPushButton#imageRemoveBtn {
+    background: rgba(0,0,0,0.7);
+    color: white;
+    border: none;
+    border-radius: 10px;
+    font-size: 16px;
+    font-weight: bold;
+}
+QPushButton#imageRemoveBtn:hover {
+    background: rgba(255,0,0,0.8);
+}
+
+/* Input container to match the preview style */
+QFrame#inputContainer {
+    background: transparent;
+    border: none;
+}
+
 

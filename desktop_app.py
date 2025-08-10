@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 import html
-from typing import Optional
+from typing import Optional, List, Dict
 import re
 from datetime import datetime
 import math
@@ -409,6 +409,74 @@ class MessageRow(QtWidgets.QWidget):
         """Add performance stats to the message header."""
         self.stats_label.setText(f"· {stats}")
         self.stats_label.show()
+    
+    def add_images(self, images: List[Dict[str, str]]) -> None:
+        """Add images to the message content."""
+        if not images:
+            return
+        
+        # Create a container for images
+        image_container = QtWidgets.QWidget()
+        image_layout = QtWidgets.QHBoxLayout(image_container)
+        image_layout.setContentsMargins(0, 8, 0, 8)
+        image_layout.setSpacing(8)
+        
+        for image_info in images:
+            # Create image widget
+            image_label = QtWidgets.QLabel()
+            image_label.setMaximumSize(200, 200)
+            image_label.setScaledContents(False)
+            image_label.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
+            
+            # Load and display the image
+            pixmap = QtGui.QPixmap()
+            pixmap.loadFromData(QtCore.QByteArray.fromBase64(image_info["data"].encode()))
+            if not pixmap.isNull():
+                # Scale to fit while maintaining aspect ratio
+                scaled_pixmap = pixmap.scaled(200, 200, QtCore.Qt.AspectRatioMode.KeepAspectRatio, 
+                                             QtCore.Qt.TransformationMode.SmoothTransformation)
+                image_label.setPixmap(scaled_pixmap)
+                
+                # Store original pixmap for full view
+                image_label.setProperty("original_pixmap", pixmap)
+                
+                # Add click handler to view full size
+                image_label.mousePressEvent = lambda e, p=pixmap: self._show_full_image(p)
+            
+            image_layout.addWidget(image_label)
+        
+        image_layout.addStretch()
+        
+        # Insert the image container after the bubble
+        self._content_wrap.insertWidget(2, image_container)  # Index 2 to place after header and bubble
+    
+    def _show_full_image(self, pixmap: QtGui.QPixmap) -> None:
+        """Show full size image in a dialog."""
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Image")
+        dialog.setModal(True)
+        
+        layout = QtWidgets.QVBoxLayout(dialog)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Create scrollable image viewer
+        scroll = QtWidgets.QScrollArea()
+        image_label = QtWidgets.QLabel()
+        image_label.setPixmap(pixmap)
+        scroll.setWidget(image_label)
+        
+        layout.addWidget(scroll)
+        
+        # Set dialog size to 80% of screen or image size, whichever is smaller
+        screen = QtWidgets.QApplication.primaryScreen().geometry()
+        max_width = int(screen.width() * 0.8)
+        max_height = int(screen.height() * 0.8)
+        
+        dialog_width = min(pixmap.width() + 20, max_width)
+        dialog_height = min(pixmap.height() + 20, max_height)
+        dialog.resize(dialog_width, dialog_height)
+        
+        dialog.exec()
 
     def _ensure_parent_scroll_to_bottom(self) -> None:
         # Ask parent window to scroll if user is at bottom
@@ -443,6 +511,18 @@ class StreamWorker(QtCore.QObject):
         
         self._thinking_start = time()
         self._response_start = None
+        
+        # Debug: Check if images are being sent
+        print(f"\n=== StreamWorker Debug ===")
+        print(f"Model: {self._model_name}")
+        print(f"Number of messages: {len(self._messages)}")
+        if self._messages:
+            last_msg = self._messages[-1]
+            print(f"Last message role: {last_msg.get('role')}")
+            print(f"Last message has images: {'images' in last_msg}")
+            if 'images' in last_msg:
+                print(f"Number of images: {len(last_msg['images'])}")
+        print("=== End StreamWorker Debug ===\n")
         
         for chunk in ollama_chat(
             model=self._model_name,
@@ -622,6 +702,7 @@ class ChatWindow(QtWidgets.QMainWindow):
         self.add_special_message = False
         self.selected_model_index = 0  # Default to first model (gpt-oss:20b)
         self.current_chat_id: Optional[str] = None  # Track current chat
+        self.selected_images: List[Dict[str, str]] = []  # List of {"data": base64_str, "type": mime_type, "path": file_path}
 
         self.session = ChatSession(
             base_system_prompt=SYSTEM_PROMPTS[self.selected_prompt_index]["prompt"],
@@ -808,6 +889,34 @@ class ChatWindow(QtWidgets.QMainWindow):
         self.chat_scroll.setWidget(self.chat_canvas)
         chat_layout.addWidget(self.chat_scroll, 1)
 
+        # Image preview container (hidden by default)
+        self.image_preview_container = QtWidgets.QFrame()
+        self.image_preview_container.setObjectName("imagePreviewContainer")
+        self.image_preview_container.setMaximumHeight(120)
+        self.image_preview_container.hide()
+        
+        self.image_preview_layout = QtWidgets.QHBoxLayout(self.image_preview_container)
+        self.image_preview_layout.setContentsMargins(8, 8, 8, 0)
+        self.image_preview_layout.setSpacing(8)
+        
+        # Add a scroll area for image previews
+        self.image_preview_scroll = QtWidgets.QScrollArea()
+        self.image_preview_scroll.setWidgetResizable(True)
+        self.image_preview_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.image_preview_scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.image_preview_scroll.setMaximumHeight(100)
+        
+        self.image_preview_widget = QtWidgets.QWidget()
+        self.image_preview_inner_layout = QtWidgets.QHBoxLayout(self.image_preview_widget)
+        self.image_preview_inner_layout.setContentsMargins(0, 0, 0, 0)
+        self.image_preview_inner_layout.setSpacing(8)
+        self.image_preview_inner_layout.addStretch()
+        
+        self.image_preview_scroll.setWidget(self.image_preview_widget)
+        self.image_preview_layout.addWidget(self.image_preview_scroll)
+        
+        chat_layout.addWidget(self.image_preview_container)
+
         # Input area like ChatGPT (multi-line, growing)
         input_container = QtWidgets.QFrame()
         input_container.setObjectName("inputContainer")
@@ -824,6 +933,17 @@ class ChatWindow(QtWidgets.QMainWindow):
         QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Return"), self.input_edit, activated=self._on_send)
         # Ensure correct initial compact height
         self.input_edit.adjustHeight()
+        
+        # Image upload button
+        self.image_button = QtWidgets.QPushButton()
+        if qta:
+            self.image_button.setIcon(qta.icon("mdi.image-plus"))
+        else:
+            self.image_button.setText("📎")
+        self.image_button.setToolTip("Attach images")
+        self.image_button.clicked.connect(self._on_add_image)
+        input_layout.addWidget(self.image_button)
+        
         self.send_button = QtWidgets.QPushButton()
         if qta:
             self.send_button.setIcon(qta.icon("mdi.send"))
@@ -948,6 +1068,12 @@ class ChatWindow(QtWidgets.QMainWindow):
         # Enable/disable reasoning dropdown based on model capabilities
         self.reasoning_combo.setEnabled(model_info["supports_reasoning"])
         self.reasoning_label.setEnabled(model_info["supports_reasoning"])
+        
+        # Enable/disable image button based on model capabilities
+        self.image_button.setEnabled(model_info.get("supports_images", False))
+        if not model_info.get("supports_images", False):
+            # Clear any selected images when switching to a model that doesn't support them
+            self._clear_selected_images()
 
     def _on_model_changed(self, index: int) -> None:
         # Don't do anything if this is the same model
@@ -975,10 +1101,12 @@ class ChatWindow(QtWidgets.QMainWindow):
         self._render_history()
         self._refresh_chat_history()
 
-    def _append_chat(self, role: str, content: str, thinking: Optional[str] = None) -> None:
+    def _append_chat(self, role: str, content: str, thinking: Optional[str] = None, images: Optional[List[Dict[str, str]]] = None) -> None:
         if role == "user":
             row = MessageRow(role="user", title="You")
             row.set_plain_text(content)
+            if images:
+                row.add_images(images)
         else:
             row = MessageRow(role="assistant", title="Assistant")
             # Check if M2M system prompt is selected
@@ -1000,19 +1128,35 @@ class ChatWindow(QtWidgets.QMainWindow):
                 w.deleteLater()
         for m in self.session.messages:
             if m.role == "user":
-                self._append_chat("user", m.content)
+                self._append_chat("user", m.content, images=m.images if m.images else None)
             elif m.role == "assistant":
                 self._append_chat("assistant", m.content, m.thinking)
 
     def _on_send(self) -> None:
         user_text = self.input_edit.toPlainText().strip()
-        if not user_text:
+        if not user_text and not self.selected_images:
             return
+        # If no text but images exist, add a default prompt
+        if not user_text and self.selected_images:
+            user_text = "What's in this image?"
         self.input_edit.clear()
 
-        # Display user message immediately
-        self.session.add_user_message(user_text)
-        self._append_chat("user", user_text)
+        # Display user message immediately with images if any
+        print(f"\n=== _on_send Debug ===")
+        print(f"Number of selected images: {len(self.selected_images)}")
+        if self.selected_images:
+            print(f"First image length: {len(self.selected_images[0]['data'])}")
+        
+        self.session.add_user_message(user_text, self.selected_images)
+        self._append_chat("user", user_text, images=self.selected_images)
+        
+        # Debug: Check if images were stored in session
+        if self.session.messages and self.session.messages[-1].role == "user":
+            print(f"Images stored in last message: {len(self.session.messages[-1].images)}")
+        print("=== End _on_send Debug ===\n")
+        
+        # Clear selected images after sending
+        self._clear_selected_images()
 
         self._start_stream_thread(user_text)
     def _start_stream_thread(self, user_text: str) -> None:
@@ -1039,6 +1183,14 @@ class ChatWindow(QtWidgets.QMainWindow):
         print(f"Compliance: {self.add_special_message}")
         print(f"Original text: {user_text}")
         print(f"Transformed message: {message_to_send}")
+        print(f"Number of messages: {len(model_messages)}")
+        # Check if last message has images
+        if model_messages and "images" in model_messages[-1]:
+            print(f"Images in last message: {len(model_messages[-1]['images'])}")
+            for i, img in enumerate(model_messages[-1]['images']):
+                print(f"  Image {i}: {img[:50]}... (length: {len(img)})")
+        else:
+            print("No images in last message")
         print("=== End debug ===\n")
 
         # Prepare UI: add an Assistant bubble and stream text into it
@@ -1350,6 +1502,121 @@ class ChatWindow(QtWidgets.QMainWindow):
         x = 12
         y = 12
         self._expand_sidebar_btn.move(x, y)
+
+    # --- Image handling methods ---
+    def _on_add_image(self) -> None:
+        """Handle image selection."""
+        file_dialog = QtWidgets.QFileDialog(self)
+        file_dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFiles)
+        file_dialog.setNameFilter("Images (*.png *.jpg *.jpeg *.gif *.bmp *.webp)")
+        
+        if file_dialog.exec() == QtWidgets.QFileDialog.DialogCode.Accepted:
+            file_paths = file_dialog.selectedFiles()
+            for file_path in file_paths:
+                self._add_image_from_path(file_path)
+    
+    def _add_image_from_path(self, file_path: str) -> None:
+        """Add an image from file path."""
+        try:
+            # Read and encode the image
+            with open(file_path, "rb") as f:
+                image_data = f.read()
+            
+            # Determine content type
+            ext = file_path.lower().split('.')[-1]
+            content_type_map = {
+                'png': 'image/png',
+                'jpg': 'image/jpeg',
+                'jpeg': 'image/jpeg',
+                'gif': 'image/gif',
+                'bmp': 'image/bmp',
+                'webp': 'image/webp'
+            }
+            content_type = content_type_map.get(ext, 'image/jpeg')
+            
+            # Encode to base64
+            import base64
+            base64_data = base64.b64encode(image_data).decode('utf-8')
+            
+            # Add to selected images
+            self.selected_images.append({
+                "data": base64_data,
+                "type": content_type,
+                "path": file_path
+            })
+            
+            # Show preview
+            self._update_image_preview()
+            
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "Error", f"Failed to load image: {str(e)}")
+    
+    def _update_image_preview(self) -> None:
+        """Update the image preview container."""
+        # Clear existing previews
+        while self.image_preview_inner_layout.count() > 1:  # Keep the stretch
+            item = self.image_preview_inner_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        
+        # Add new previews
+        for i, image_info in enumerate(self.selected_images):
+            preview_widget = self._create_image_preview(i, image_info)
+            self.image_preview_inner_layout.insertWidget(i, preview_widget)
+        
+        # Show/hide preview container
+        self.image_preview_container.setVisible(len(self.selected_images) > 0)
+    
+    def _create_image_preview(self, index: int, image_info: Dict[str, str]) -> QtWidgets.QWidget:
+        """Create an image preview widget."""
+        container = QtWidgets.QFrame()
+        container.setObjectName("imagePreview")
+        container.setFixedSize(80, 80)
+        
+        layout = QtWidgets.QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        
+        # Image label
+        image_label = QtWidgets.QLabel()
+        image_label.setFixedSize(80, 80)
+        image_label.setScaledContents(True)
+        image_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        
+        # Load and display the image
+        pixmap = QtGui.QPixmap()
+        pixmap.loadFromData(QtCore.QByteArray.fromBase64(image_info["data"].encode()))
+        if not pixmap.isNull():
+            # Scale to fit while maintaining aspect ratio
+            scaled_pixmap = pixmap.scaled(80, 80, QtCore.Qt.AspectRatioMode.KeepAspectRatio, 
+                                         QtCore.Qt.TransformationMode.SmoothTransformation)
+            image_label.setPixmap(scaled_pixmap)
+        
+        # Remove button
+        remove_btn = QtWidgets.QPushButton("×")
+        remove_btn.setObjectName("imageRemoveBtn")
+        remove_btn.setFixedSize(20, 20)
+        remove_btn.clicked.connect(lambda: self._remove_image(index))
+        
+        # Position remove button in top-right corner
+        remove_btn.setParent(container)
+        remove_btn.move(60, 0)
+        remove_btn.raise_()
+        
+        layout.addWidget(image_label)
+        
+        return container
+    
+    def _remove_image(self, index: int) -> None:
+        """Remove an image from the selection."""
+        if 0 <= index < len(self.selected_images):
+            self.selected_images.pop(index)
+            self._update_image_preview()
+    
+    def _clear_selected_images(self) -> None:
+        """Clear all selected images."""
+        self.selected_images.clear()
+        self._update_image_preview()
 
 
 def run() -> None:
