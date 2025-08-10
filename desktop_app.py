@@ -77,6 +77,25 @@ class AutoResizeTextBrowser(QtWidgets.QTextBrowser):
         self.setMaximumHeight(new_height)
 
 
+class ExportToolButton(QtWidgets.QToolButton):
+    """ToolButton that detects Cmd-click to trigger a quick-export signal."""
+    quickExportRequested = QtCore.Signal()
+
+    def mousePressEvent(self, e: QtGui.QMouseEvent) -> None:  # type: ignore[override]
+        if (
+            e.button() == QtCore.Qt.MouseButton.LeftButton
+            and (e.modifiers() & QtCore.Qt.KeyboardModifier.MetaModifier)
+        ):
+            e.accept()
+            self.quickExportRequested.emit()
+            return
+        if e.button() == QtCore.Qt.MouseButton.RightButton:
+            e.accept()
+            self.quickExportRequested.emit()
+            return
+        super().mousePressEvent(e)
+
+
 class GrowingPlainTextEdit(QtWidgets.QPlainTextEdit):
     """PlainTextEdit that grows with content and handles Cmd+Enter to send."""
 
@@ -1089,7 +1108,7 @@ class ChatWindow(QtWidgets.QMainWindow):
         self._toast = ToastOverlay(self)
 
         # Export button (floating in top right)
-        self._export_btn = QtWidgets.QToolButton(self)
+        self._export_btn = ExportToolButton(self)
         if qta:
             self._export_btn.setIcon(qta.icon("mdi.download-outline", scale_factor=0.8))
         else:
@@ -1098,8 +1117,13 @@ class ChatWindow(QtWidgets.QMainWindow):
         self._export_btn.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
         self._export_btn.setObjectName("exportBtn")
         self._export_btn.setFixedSize(32, 32)
+        # Normal click
         self._export_btn.clicked.connect(self._export_chat)
+        # Cmd-click quick export handled by the button itself
+        self._export_btn.quickExportRequested.connect(self._quick_export_pdf)
         self._position_export_button()
+        # Install a global-level event filter as a fallback to catch Cmd-click reliably on macOS
+        self.installEventFilter(self)
 
         # Overlay expand button visibility is controlled manually on toggle
 
@@ -1844,6 +1868,8 @@ class ChatWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.information(self, "Export", "No conversation to export.")
             return
         
+        # Note: quick export is handled by Cmd-click on the button itself
+
         # Ask user for export format
         format_dialog = QtWidgets.QDialog(self)
         format_dialog.setWindowTitle("Export Format")
@@ -1978,6 +2004,53 @@ class ChatWindow(QtWidgets.QMainWindow):
             
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Export Error", f"Failed to export chat: {str(e)}")
+
+    def _quick_export_pdf(self) -> None:
+        """Export a PDF to the Desktop with sensible defaults and open it."""
+        # Build Desktop path and filename
+        desktop_dir = QtCore.QStandardPaths.writableLocation(QtCore.QStandardPaths.StandardLocation.DesktopLocation)
+        if not desktop_dir:
+            import os as _os
+            desktop_dir = _os.path.expanduser("~/Desktop")
+        from datetime import datetime as _dt
+        timestamp = _dt.now().strftime("%Y%m%d_%H%M%S")
+        title = self.chat_persistence._get_chat_title(self.session.messages).replace("...", "")[:30]
+        import re as _re, os as _os
+        clean_title = _re.sub(r'[^\w\s-]', '', title).strip()
+        clean_title = _re.sub(r'[-\s]+', '-', clean_title)
+        file_path = _os.path.join(desktop_dir, f"chat_{clean_title}_{timestamp}.pdf")
+        try:
+            # Defaults mirror dialog defaults: include_system unchecked, thinking checked, minimalist style
+            self._export_as_pdf(
+                file_path,
+                include_system=False,
+                include_thinking=True,
+                minimalist_style=True,
+            )
+            # Open the exported file
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(file_path))
+            self._toast.show_message(f"Quick export to Desktop: { _os.path.basename(file_path)}")
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Export Error", f"Failed quick export: {str(e)}")
+
+    def eventFilter(self, obj: QtCore.QObject, event: QtCore.QEvent) -> bool:  # type: ignore[override]
+        # Global fallback: detect Cmd+LeftClick anywhere; if cursor is over export button → quick export
+        if event.type() == QtCore.QEvent.Type.MouseButtonPress:
+            try:
+                mods = QtGui.QGuiApplication.keyboardModifiers()
+            except Exception:
+                mods = QtCore.Qt.KeyboardModifier.NoModifier
+            if mods & QtCore.Qt.KeyboardModifier.MetaModifier:
+                # Identify widget under cursor
+                try:
+                    pos = QtGui.QCursor.pos()
+                    target = QtWidgets.QApplication.widgetAt(pos)
+                except Exception:
+                    target = None
+                if target is self._export_btn:
+                    self._quick_export_pdf()
+                    return True
+        return super().eventFilter(obj, event)
     
     def _export_as_markdown(self, include_system: bool, include_thinking: bool) -> str:
         """Export chat as markdown."""
@@ -2336,7 +2409,7 @@ class ChatWindow(QtWidgets.QMainWindow):
         # honors these more reliably than CSS.
         styled = _re.sub(
             r"<table>",
-            "<table border='1' cellspacing='0' cellpadding='5' style='border-collapse:collapse; border-spacing:0; width:100%'>",
+            "<table border='1' cellspacing='0' cellpadding='5' style='border-collapse:collapse; border-spacing:0; width:100%; margin:8pt 0;'>",
             html_fragment,
         )
         # Smaller font size inside cells (9pt), consistent padding, visible borders, and consistent serif font
