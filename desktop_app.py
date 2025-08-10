@@ -1855,16 +1855,16 @@ class ChatWindow(QtWidgets.QMainWindow):
         layout.addWidget(label)
         
         # Format radio buttons
+        self.export_pdf_radio = QtWidgets.QRadioButton("PDF (.pdf)")
+        self.export_pdf_radio.setChecked(True)  # Default to PDF
         self.export_markdown_radio = QtWidgets.QRadioButton("Markdown (.md)")
-        self.export_markdown_radio.setChecked(True)
         self.export_json_radio = QtWidgets.QRadioButton("JSON (.json)")
         self.export_txt_radio = QtWidgets.QRadioButton("Plain Text (.txt)")
-        self.export_pdf_radio = QtWidgets.QRadioButton("PDF (.pdf)")
         
+        layout.addWidget(self.export_pdf_radio)  # PDF first
         layout.addWidget(self.export_markdown_radio)
         layout.addWidget(self.export_json_radio)
         layout.addWidget(self.export_txt_radio)
-        layout.addWidget(self.export_pdf_radio)
         
         # Options
         self.export_include_system = QtWidgets.QCheckBox("Include system prompt")
@@ -1886,8 +1886,8 @@ class ChatWindow(QtWidgets.QMainWindow):
         pdf_style_layout.addWidget(self.pdf_minimalist_radio)
         pdf_style_layout.addWidget(self.pdf_standard_radio)
         layout.addWidget(self.pdf_style_group)
-        # Hide by default, show only for PDF
-        self.pdf_style_group.hide()
+        # Show PDF style options since PDF is default
+        self.pdf_style_group.show()
         
         # Connect radio button to show/hide PDF options
         self.export_pdf_radio.toggled.connect(lambda checked: self.pdf_style_group.setVisible(checked))
