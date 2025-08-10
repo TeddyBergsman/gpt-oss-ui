@@ -501,6 +501,7 @@ class StreamWorker(QtCore.QObject):
     token = QtCore.Signal(str)
     thinking = QtCore.Signal(str)
     finished = QtCore.Signal(str, str, float, float, int)  # content, thinking, reasoning_time, response_time, token_count
+    error = QtCore.Signal(str)  # Error message
 
     def __init__(self, model_name: str, messages, options) -> None:
         super().__init__()
@@ -512,6 +513,11 @@ class StreamWorker(QtCore.QObject):
         self._response_start = None
         self._thinking_time = 0.0
         self._response_time = 0.0
+        self._stop_requested = False
+    
+    def request_stop(self) -> None:
+        """Request the streaming to stop."""
+        self._stop_requested = True
 
     @QtCore.Slot()
     def run(self) -> None:
@@ -522,41 +528,61 @@ class StreamWorker(QtCore.QObject):
         self._thinking_start = time()
         self._response_start = None
         
-        for chunk in ollama_chat(
-            model=self._model_name,
-            messages=self._messages,
-            stream=True,
-            options=self._options,
-        ):
-            msg = chunk.get("message", {})
-            if (thinking := msg.get("thinking")):
-                # Still in thinking phase
-                full_thinking.append(thinking)
-                self.thinking.emit(thinking)
-            if (content := msg.get("content")):
-                # First content token marks end of thinking, start of response
-                if self._response_start is None:
-                    self._thinking_time = time() - self._thinking_start
-                    self._response_start = time()
-                full_response.append(content)
-                self._token_count += 1  # Rough approximation: each chunk is ~1 token
-                self.token.emit(content)
-        
-        # Calculate final timings
-        if self._response_start:
-            self._response_time = time() - self._response_start
-        else:
-            # No response phase (error?)
-            self._response_time = 0
-            self._thinking_time = time() - self._thinking_start
+        try:
+            for chunk in ollama_chat(
+                model=self._model_name,
+                messages=self._messages,
+                stream=True,
+                options=self._options,
+            ):
+                # Check if stop was requested
+                if self._stop_requested:
+                    full_response.append("\n\n[Generation stopped by user]")
+                    break
+                    
+                msg = chunk.get("message", {})
+                if (thinking := msg.get("thinking")):
+                    # Still in thinking phase
+                    full_thinking.append(thinking)
+                    self.thinking.emit(thinking)
+                if (content := msg.get("content")):
+                    # First content token marks end of thinking, start of response
+                    if self._response_start is None:
+                        self._thinking_time = time() - self._thinking_start
+                        self._response_start = time()
+                    full_response.append(content)
+                    self._token_count += 1  # Rough approximation: each chunk is ~1 token
+                    self.token.emit(content)
             
-        self.finished.emit(
-            "".join(full_response),
-            "".join(full_thinking),
-            self._thinking_time,
-            self._response_time,
-            self._token_count
-        )
+            # Calculate final timings
+            if self._response_start:
+                self._response_time = time() - self._response_start
+            else:
+                # No response phase (error?)
+                self._response_time = 0
+                self._thinking_time = time() - self._thinking_start
+                
+            self.finished.emit(
+                "".join(full_response),
+                "".join(full_thinking),
+                self._thinking_time,
+                self._response_time,
+                self._token_count
+            )
+        except Exception as e:
+            # Handle various error types
+            error_msg = str(e)
+            if "failed to connect" in error_msg.lower() or "connection error" in error_msg.lower():
+                self.error.emit("Failed to connect to Ollama. Please ensure Ollama is running.")
+            elif "model" in error_msg.lower() and "not found" in error_msg.lower():
+                self.error.emit(f"Model '{self._model_name}' not found. Please pull the model first.")
+            elif "context length exceeded" in error_msg.lower():
+                self.error.emit("Context length exceeded. Please start a new conversation.")
+            else:
+                self.error.emit(f"An error occurred: {error_msg}")
+            
+            # Emit empty finished signal to clean up UI state
+            self.finished.emit("", "", 0, 0, 0)
 
 class ToastOverlay(QtWidgets.QFrame):
     def __init__(self, parent: QtWidgets.QWidget) -> None:
@@ -953,6 +979,7 @@ class ChatWindow(QtWidgets.QMainWindow):
 
         # Chat panel
         chat_panel = QtWidgets.QWidget()
+        chat_panel.setObjectName("chatPanel")
         chat_layout = QtWidgets.QVBoxLayout(chat_panel)
 
         self.chat_scroll = QtWidgets.QScrollArea()
@@ -1029,6 +1056,18 @@ class ChatWindow(QtWidgets.QMainWindow):
             self.send_button.setText("Send")
         self.send_button.clicked.connect(self._on_send)
         input_layout.addWidget(self.send_button)
+        
+        # Stop button (hidden by default)
+        self.stop_button = QtWidgets.QPushButton()
+        self.stop_button.setObjectName("stopButton")
+        if qta:
+            self.stop_button.setIcon(qta.icon("mdi.stop"))
+        else:
+            self.stop_button.setText("Stop")
+        self.stop_button.clicked.connect(self._on_stop_generation)
+        self.stop_button.hide()
+        input_layout.addWidget(self.stop_button)
+        
         chat_layout.addWidget(input_container)
 
         splitter.addWidget(chat_panel)
@@ -1047,6 +1086,19 @@ class ChatWindow(QtWidgets.QMainWindow):
 
         # Toast overlay
         self._toast = ToastOverlay(self)
+
+        # Export button (floating in top right)
+        self._export_btn = QtWidgets.QToolButton(self)
+        if qta:
+            self._export_btn.setIcon(qta.icon("mdi.download-outline", scale_factor=0.8))
+        else:
+            self._export_btn.setText("↓")
+        self._export_btn.setToolTip("Export Chat")
+        self._export_btn.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
+        self._export_btn.setObjectName("exportBtn")
+        self._export_btn.setFixedSize(32, 32)
+        self._export_btn.clicked.connect(self._export_chat)
+        self._position_export_button()
 
         # Overlay expand button visibility is controlled manually on toggle
 
@@ -1258,6 +1310,11 @@ class ChatWindow(QtWidgets.QMainWindow):
         
         self._add_row(self._current_assistant_bubble)
 
+        # Update UI state for streaming
+        self.send_button.hide()
+        self.stop_button.show()
+        self.input_edit.setEnabled(False)
+
         self._stream_thread = QtCore.QThread(self)  # keep reference
         self._worker = StreamWorker(self.session.model_name, model_messages, model_options)
         self._worker.moveToThread(self._stream_thread)
@@ -1266,6 +1323,7 @@ class ChatWindow(QtWidgets.QMainWindow):
         self._worker.token.connect(self._on_token)
         self._worker.thinking.connect(self._on_thinking)
         self._worker.finished.connect(self._on_finished)
+        self._worker.error.connect(self._on_stream_error)
         self._worker.finished.connect(self._worker.deleteLater)
         self._stream_thread.finished.connect(self._stream_thread.deleteLater)
         self._stream_thread.start()
@@ -1282,6 +1340,28 @@ class ChatWindow(QtWidgets.QMainWindow):
         if hasattr(self, "_current_assistant_bubble") and self._current_assistant_bubble:
             self._current_assistant_bubble.append_reasoning(text)
             self.scroll_to_bottom_if_needed()
+    
+    @QtCore.Slot(str)
+    def _on_stream_error(self, error_msg: str) -> None:
+        """Handle streaming errors by showing error message and cleaning up."""
+        # Remove the empty assistant bubble if it exists
+        if hasattr(self, "_current_assistant_bubble") and self._current_assistant_bubble:
+            self._current_assistant_bubble.deleteLater()
+            self._current_assistant_bubble = None
+        
+        # Reset UI state
+        self.stop_button.hide()
+        self.send_button.show()
+        self.input_edit.setEnabled(True)
+        self.input_edit.setFocus()
+        
+        # Show error in a message box
+        QtWidgets.QMessageBox.critical(self, "Error", error_msg)
+        
+        # Clean up the thread
+        if hasattr(self, "_stream_thread"):
+            self._stream_thread.quit()
+            self._stream_thread.wait()
 
     @QtCore.Slot(str, str, float, float, int)
     def _on_finished(self, content: str, thinking: str, reasoning_time: float, response_time: float, token_count: int) -> None:
@@ -1294,19 +1374,36 @@ class ChatWindow(QtWidgets.QMainWindow):
                 # Ensure reasoning section exists but keep collapsed by default
                 self._current_assistant_bubble.append_reasoning("")
             # Add performance stats
-            tokens_per_sec = token_count / response_time if response_time > 0 else 0
-            stats = f"{reasoning_time:.1f}s (reasoning) · {response_time:.1f}s (responding) · {tokens_per_sec:.1f} tokens/s"
-            self._current_assistant_bubble.append_stats(stats)
+            if response_time > 0:
+                tokens_per_sec = token_count / response_time if response_time > 0 else 0
+                stats = f"{reasoning_time:.1f}s (reasoning) · {response_time:.1f}s (responding) · {tokens_per_sec:.1f} tokens/s"
+                self._current_assistant_bubble.append_stats(stats)
             self._current_assistant_bubble = None
-        self.session.add_assistant_message(content, thinking or None)
+        
+        # Only add to session if we got actual content
+        if content:
+            self.session.add_assistant_message(content, thinking or None)
+        
         if hasattr(self, "_stream_thread"):
             self._stream_thread.quit()
             self._stream_thread.wait()
         self.scroll_to_bottom_if_needed()
         
+        # Reset UI state
+        self.stop_button.hide()
+        self.send_button.show()
+        self.input_edit.setEnabled(True)
+        self.input_edit.setFocus()
+        
         # Auto-save the chat after each message exchange
         self._save_current_chat()
         self._refresh_chat_history()
+    
+    def _on_stop_generation(self) -> None:
+        """Stop the current generation."""
+        if hasattr(self, "_worker") and self._worker:
+            self._worker.request_stop()
+            self.stop_button.setEnabled(False)  # Prevent multiple clicks
 
     # --- Message helpers ---
     def _add_row(self, row: 'MessageRow') -> None:
@@ -1535,6 +1632,8 @@ class ChatWindow(QtWidgets.QMainWindow):
         self._apply_responsive_sidebar()
         if self._expand_sidebar_btn:
             self._position_expand_button()
+        if hasattr(self, '_export_btn'):
+            self._position_export_button()
 
     def _apply_responsive_sidebar(self) -> None:
         # Keep behavior simple: do not auto-hide to avoid flicker; rely on user toggle
@@ -1556,6 +1655,15 @@ class ChatWindow(QtWidgets.QMainWindow):
         x = 12
         y = 12
         self._expand_sidebar_btn.move(x, y)
+    
+    def _position_export_button(self) -> None:
+        # Place in top-right corner of window
+        if not hasattr(self, '_export_btn') or not self._export_btn:
+            return
+        geo = self.geometry()
+        x = geo.width() - self._export_btn.width() - 12
+        y = 12
+        self._export_btn.move(x, y)
 
     # --- Image handling methods ---
     def _on_add_image(self) -> None:
@@ -1728,6 +1836,401 @@ class ChatWindow(QtWidgets.QMainWindow):
                 return True
         
         return False  # Let default paste behavior handle text
+    
+    def _export_chat(self) -> None:
+        """Export the current chat conversation."""
+        if len(self.session.messages) <= 1:  # Only system message
+            QtWidgets.QMessageBox.information(self, "Export", "No conversation to export.")
+            return
+        
+        # Ask user for export format
+        format_dialog = QtWidgets.QDialog(self)
+        format_dialog.setWindowTitle("Export Format")
+        format_dialog.setModal(True)
+        
+        layout = QtWidgets.QVBoxLayout(format_dialog)
+        layout.setSpacing(12)
+        
+        label = QtWidgets.QLabel("Choose export format:")
+        layout.addWidget(label)
+        
+        # Format radio buttons
+        self.export_markdown_radio = QtWidgets.QRadioButton("Markdown (.md)")
+        self.export_markdown_radio.setChecked(True)
+        self.export_json_radio = QtWidgets.QRadioButton("JSON (.json)")
+        self.export_txt_radio = QtWidgets.QRadioButton("Plain Text (.txt)")
+        self.export_pdf_radio = QtWidgets.QRadioButton("PDF (.pdf)")
+        
+        layout.addWidget(self.export_markdown_radio)
+        layout.addWidget(self.export_json_radio)
+        layout.addWidget(self.export_txt_radio)
+        layout.addWidget(self.export_pdf_radio)
+        
+        # Options
+        self.export_include_system = QtWidgets.QCheckBox("Include system prompt")
+        self.export_include_thinking = QtWidgets.QCheckBox("Include thinking/reasoning")
+        self.export_include_thinking.setChecked(True)
+        
+        layout.addWidget(QtWidgets.QLabel())  # Spacer
+        layout.addWidget(self.export_include_system)
+        layout.addWidget(self.export_include_thinking)
+        
+        # Buttons
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok | 
+            QtWidgets.QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(format_dialog.accept)
+        buttons.rejected.connect(format_dialog.reject)
+        layout.addWidget(buttons)
+        
+        if format_dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        
+        # Determine file extension and format
+        if self.export_markdown_radio.isChecked():
+            ext = "md"
+            format_type = "markdown"
+        elif self.export_json_radio.isChecked():
+            ext = "json"
+            format_type = "json"
+        elif self.export_pdf_radio.isChecked():
+            ext = "pdf"
+            format_type = "pdf"
+        else:
+            ext = "txt"
+            format_type = "text"
+        
+        # Get save file path
+        file_dialog = QtWidgets.QFileDialog(self)
+        file_dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptSave)
+        file_dialog.setDefaultSuffix(ext)
+        file_dialog.setNameFilter(f"{format_type.title()} files (*.{ext})")
+        
+        # Generate default filename
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        title = self.chat_persistence._get_chat_title(self.session.messages).replace("...", "")[:30]
+        # Clean title for filename
+        import re
+        clean_title = re.sub(r'[^\w\s-]', '', title).strip()
+        clean_title = re.sub(r'[-\s]+', '-', clean_title)
+        default_name = f"chat_{clean_title}_{timestamp}.{ext}"
+        file_dialog.selectFile(default_name)
+        
+        if file_dialog.exec() != QtWidgets.QFileDialog.DialogCode.Accepted:
+            return
+        
+        file_path = file_dialog.selectedFiles()[0]
+        
+        try:
+            # Export based on format
+            if format_type == "pdf":
+                # PDF export uses a different approach
+                self._export_as_pdf(
+                    file_path,
+                    include_system=self.export_include_system.isChecked(),
+                    include_thinking=self.export_include_thinking.isChecked()
+                )
+            else:
+                # Text-based exports
+                if format_type == "markdown":
+                    content = self._export_as_markdown(
+                        include_system=self.export_include_system.isChecked(),
+                        include_thinking=self.export_include_thinking.isChecked()
+                    )
+                elif format_type == "json":
+                    content = self._export_as_json(
+                        include_system=self.export_include_system.isChecked(),
+                        include_thinking=self.export_include_thinking.isChecked()
+                    )
+                else:
+                    content = self._export_as_text(
+                        include_system=self.export_include_system.isChecked(),
+                        include_thinking=self.export_include_thinking.isChecked()
+                    )
+                
+                # Write to file
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(content)
+            
+            self._toast.show_message(f"Chat exported to {file_path.split('/')[-1]}")
+            
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Export Error", f"Failed to export chat: {str(e)}")
+    
+    def _export_as_markdown(self, include_system: bool, include_thinking: bool) -> str:
+        """Export chat as markdown."""
+        from core.m2m_formatter import is_m2m_format, parse_m2m_output, format_m2m_to_markdown
+        
+        lines = []
+        
+        # Add header
+        lines.append(f"# Chat Export - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append(f"\n**Model:** {self.session.model_name}")
+        lines.append(f"**System Prompt:** {SYSTEM_PROMPTS[self.selected_prompt_index]['name']}\n")
+        
+        # Check if M2M system prompt is being used
+        is_m2m_prompt = (self.selected_prompt_index < len(SYSTEM_PROMPTS) and 
+                        SYSTEM_PROMPTS[self.selected_prompt_index]["name"] == "M2M")
+        
+        # Add messages
+        for msg in self.session.messages:
+            if msg.role == "system" and not include_system:
+                continue
+            
+            if msg.role == "user":
+                lines.append(f"## User\n")
+                lines.append(msg.content)
+                if msg.images:
+                    lines.append(f"\n*[{len(msg.images)} image(s) attached]*")
+            elif msg.role == "assistant":
+                lines.append(f"\n## Assistant\n")
+                if include_thinking and msg.thinking:
+                    lines.append("### Thinking\n")
+                    lines.append(f"```\n{msg.thinking}\n```\n")
+                
+                # Apply M2M formatting if needed
+                content = msg.content
+                if is_m2m_prompt and is_m2m_format(content):
+                    parsed_data = parse_m2m_output(content)
+                    if parsed_data:
+                        content = format_m2m_to_markdown(parsed_data)
+                
+                lines.append(content)
+            elif msg.role == "system" and include_system:
+                lines.append(f"## System\n")
+                lines.append(f"```\n{msg.content}\n```")
+            
+            lines.append("")  # Empty line between messages
+        
+        return "\n".join(lines)
+    
+    def _export_as_json(self, include_system: bool, include_thinking: bool) -> str:
+        """Export chat as JSON."""
+        import json
+        
+        data = {
+            "exported_at": datetime.now().isoformat(),
+            "model": self.session.model_name,
+            "system_prompt": SYSTEM_PROMPTS[self.selected_prompt_index]["name"],
+            "messages": []
+        }
+        
+        for msg in self.session.messages:
+            if msg.role == "system" and not include_system:
+                continue
+            
+            msg_data = {
+                "role": msg.role,
+                "content": msg.content
+            }
+            
+            if include_thinking and msg.thinking:
+                msg_data["thinking"] = msg.thinking
+            
+            if msg.images:
+                # Only include image metadata, not the actual base64 data
+                msg_data["images"] = [{"type": img["type"], "path": img.get("path", "unknown")} for img in msg.images]
+            
+            data["messages"].append(msg_data)
+        
+        return json.dumps(data, indent=2, ensure_ascii=False)
+    
+    def _export_as_text(self, include_system: bool, include_thinking: bool) -> str:
+        """Export chat as plain text."""
+        from core.m2m_formatter import is_m2m_format, parse_m2m_output, format_m2m_to_markdown
+        
+        lines = []
+        
+        # Add header
+        lines.append(f"Chat Export - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append(f"Model: {self.session.model_name}")
+        lines.append(f"System Prompt: {SYSTEM_PROMPTS[self.selected_prompt_index]['name']}")
+        lines.append("=" * 60)
+        lines.append("")
+        
+        # Check if M2M system prompt is being used
+        is_m2m_prompt = (self.selected_prompt_index < len(SYSTEM_PROMPTS) and 
+                        SYSTEM_PROMPTS[self.selected_prompt_index]["name"] == "M2M")
+        
+        # Add messages
+        for msg in self.session.messages:
+            if msg.role == "system" and not include_system:
+                continue
+            
+            if msg.role == "user":
+                lines.append("USER:")
+                lines.append(msg.content)
+                if msg.images:
+                    lines.append(f"[{len(msg.images)} image(s) attached]")
+            elif msg.role == "assistant":
+                lines.append("\nASSISTANT:")
+                if include_thinking and msg.thinking:
+                    lines.append("[THINKING]")
+                    lines.append(msg.thinking)
+                    lines.append("[/THINKING]")
+                
+                # Apply M2M formatting if needed
+                content = msg.content
+                if is_m2m_prompt and is_m2m_format(content):
+                    parsed_data = parse_m2m_output(content)
+                    if parsed_data:
+                        # For plain text, convert M2M to readable format
+                        content = format_m2m_to_markdown(parsed_data)
+                        # Strip markdown formatting for plain text
+                        content = content.replace('**', '').replace('# ', '').replace('## ', '')
+                
+                lines.append(content)
+            elif msg.role == "system" and include_system:
+                lines.append("SYSTEM:")
+                lines.append(msg.content)
+            
+            lines.append("-" * 40)
+            lines.append("")
+        
+        return "\n".join(lines)
+    
+    def _export_as_pdf(self, file_path: str, include_system: bool, include_thinking: bool) -> None:
+        """Export chat as PDF using Qt's printing functionality."""
+        from PySide6.QtPrintSupport import QPrinter
+        from PySide6.QtGui import QTextDocument, QTextCursor
+        from core.m2m_formatter import is_m2m_format, parse_m2m_output, format_m2m_to_markdown
+        
+        # Create printer and set output format
+        printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+        printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
+        printer.setOutputFileName(file_path)
+        printer.setPageSize(QtGui.QPageSize(QtGui.QPageSize.PageSizeId.A4))
+        printer.setPageMargins(QtCore.QMarginsF(20, 20, 20, 20), QtGui.QPageLayout.Unit.Millimeter)
+        
+        # Create document
+        document = QTextDocument()
+        cursor = QTextCursor(document)
+        
+        # Set document styles
+        document.setDefaultStyleSheet("""
+            body { font-family: 'Inter', 'Helvetica Neue', Arial, sans-serif; font-size: 11pt; color: #333; }
+            h1 { font-size: 20pt; font-weight: bold; margin-bottom: 12pt; }
+            h2 { font-size: 16pt; font-weight: bold; margin-top: 16pt; margin-bottom: 8pt; color: #2e7d32; }
+            h3 { font-size: 14pt; font-weight: bold; margin-top: 12pt; margin-bottom: 6pt; }
+            p { margin-bottom: 8pt; line-height: 1.5; }
+            .meta { color: #666; font-size: 10pt; }
+            .user { color: #1976d2; }
+            .assistant { color: #2e7d32; }
+            .thinking { background-color: #f5f5f5; padding: 8pt; border-left: 3pt solid #ccc; font-style: italic; }
+            pre { background-color: #f8f8f8; padding: 8pt; border: 1pt solid #ddd; font-family: monospace; }
+            ul, li { margin-bottom: 4pt; }
+            b { font-weight: bold; }
+        """)
+        
+        # Add header
+        cursor.insertHtml(f"<h1>Chat Export</h1>")
+        cursor.insertHtml(f"<p class='meta'><b>Date:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}<br/>")
+        cursor.insertHtml(f"<b>Model:</b> {self.session.model_name}<br/>")
+        cursor.insertHtml(f"<b>System Prompt:</b> {SYSTEM_PROMPTS[self.selected_prompt_index]['name']}</p>")
+        cursor.insertHtml("<hr/>")
+        
+        # Check if M2M system prompt is being used
+        is_m2m_prompt = (self.selected_prompt_index < len(SYSTEM_PROMPTS) and 
+                        SYSTEM_PROMPTS[self.selected_prompt_index]["name"] == "M2M")
+        
+        # Add messages
+        for msg in self.session.messages:
+            if msg.role == "system" and not include_system:
+                continue
+            
+            if msg.role == "user":
+                cursor.insertHtml(f"<h2 class='user'>User</h2>")
+                # Convert content to HTML, preserving line breaks
+                content_html = html.escape(msg.content).replace('\n', '<br/>')
+                cursor.insertHtml(f"<p>{content_html}</p>")
+                if msg.images:
+                    cursor.insertHtml(f"<p class='meta'><i>[{len(msg.images)} image(s) attached]</i></p>")
+                    
+            elif msg.role == "assistant":
+                cursor.insertHtml(f"<h2 class='assistant'>Assistant</h2>")
+                if include_thinking and msg.thinking:
+                    cursor.insertHtml("<h3>Thinking</h3>")
+                    thinking_html = html.escape(msg.thinking).replace('\n', '<br/>')
+                    cursor.insertHtml(f"<div class='thinking'>{thinking_html}</div>")
+                
+                # Apply M2M formatting if needed
+                content = msg.content
+                if is_m2m_prompt and is_m2m_format(content):
+                    parsed_data = parse_m2m_output(content)
+                    if parsed_data:
+                        content = format_m2m_to_markdown(parsed_data)
+                
+                # Convert markdown to basic HTML
+                content_html = self._simple_markdown_to_html(content)
+                cursor.insertHtml(f"<div>{content_html}</div>")
+                
+            elif msg.role == "system" and include_system:
+                cursor.insertHtml("<h2>System</h2>")
+                system_html = html.escape(msg.content).replace('\n', '<br/>')
+                cursor.insertHtml(f"<pre>{system_html}</pre>")
+            
+            cursor.insertHtml("<br/>")
+        
+        # Print to PDF
+        document.print_(printer)
+    
+    def _simple_markdown_to_html(self, markdown_text: str) -> str:
+        """Convert basic markdown to HTML for PDF export."""
+        import re
+        
+        # Escape HTML first
+        html_text = html.escape(markdown_text)
+        
+        # Convert code blocks
+        html_text = re.sub(r'```(.*?)```', r'<pre>\1</pre>', html_text, flags=re.DOTALL)
+        
+        # Convert inline code
+        html_text = re.sub(r'`([^`]+)`', r'<code>\1</code>', html_text)
+        
+        # Convert headers
+        html_text = re.sub(r'^### (.+)$', r'<h3>\1</h3>', html_text, flags=re.MULTILINE)
+        html_text = re.sub(r'^## (.+)$', r'<h2>\1</h2>', html_text, flags=re.MULTILINE)
+        html_text = re.sub(r'^# (.+)$', r'<h1>\1</h1>', html_text, flags=re.MULTILINE)
+        
+        # Convert lists
+        lines = html_text.split('\n')
+        in_list = False
+        processed_lines = []
+        
+        for line in lines:
+            # Check if this is a list item
+            if re.match(r'^\s*[-*]\s+', line):
+                if not in_list:
+                    processed_lines.append('<ul>')
+                    in_list = True
+                # Convert list item
+                item_text = re.sub(r'^\s*[-*]\s+', '', line)
+                processed_lines.append(f'<li>{item_text}</li>')
+            else:
+                # End list if we were in one
+                if in_list and line.strip():
+                    processed_lines.append('</ul>')
+                    in_list = False
+                processed_lines.append(line)
+        
+        # Close any open list
+        if in_list:
+            processed_lines.append('</ul>')
+        
+        html_text = '\n'.join(processed_lines)
+        
+        # Convert bold
+        html_text = re.sub(r'\*\*([^*]+)\*\*', r'<b>\1</b>', html_text)
+        
+        # Convert italic
+        html_text = re.sub(r'\*([^*]+)\*', r'<i>\1</i>', html_text)
+        
+        # Convert line breaks
+        html_text = html_text.replace('\n', '<br/>')
+        
+        return html_text
 
 
 def run() -> None:

@@ -5,7 +5,6 @@ QMainWindow { background: {{color_bg}}; }
 /* Remove splitter handle visuals entirely */
 QSplitter::handle { background: transparent; }
 QSplitter::handle:horizontal { width: 0px; }
-QToolBar { background: {{color_bg}}; border-bottom: 1px solid {{color_border}}; spacing: 6px; }
 QToolButton { color: {{color_text}}; border-radius: {{radius_sm}}; padding: 6px 8px; }
 QToolButton:hover { background: rgba(255,255,255,0.04); }
 QLabel#title { color: {{color_text}}; font-size: 18px; font-weight: 600; }
@@ -61,6 +60,10 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QPushButton { background: {{color_accent}}; color: white; border: none; border-radius: {{radius_md}}; padding: 8px 12px; }
 QPushButton:hover { background: #4f8df7; }
 QPushButton:disabled { background: {{color_border}}; color: {{color_text_muted}}; }
+/* Stop button styling */
+QPushButton#stopButton { background: {{color_error}}; }
+QPushButton#stopButton:hover { background: #dc3545; }
+QPushButton#stopButton:disabled { background: rgba(239,68,68,0.5); }
 QScrollArea#chatScroll { background: transparent; border: none; }
 QWidget#chatCanvas { background: transparent; }
 QLabel#msgHeader { color: {{color_text_muted}}; font-size: 12px; margin: 0 0 6px 0; }
@@ -168,6 +171,18 @@ QPushButton#imageRemoveBtn:pressed {
 QFrame#inputContainer {
     background: transparent;
     border: none;
+}
+
+/* Export button */
+QToolButton#exportBtn {
+    background: rgba(255,255,255,0.05);
+    border: 1px solid {{color_border}};
+    border-radius: 16px;
+    padding: 4px;
+}
+QToolButton#exportBtn:hover {
+    background: rgba(255,255,255,0.08);
+    border-color: {{color_accent}};
 }
 
 
