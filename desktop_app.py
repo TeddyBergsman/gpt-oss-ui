@@ -2346,10 +2346,16 @@ class ChatWindow(QtWidgets.QMainWindow):
                     cursor.setCharFormat(char_format)
                     
                     # Insert formatted content
-                    # Keep existing flow for M2M-formatted content
+                    # Handle M2M-formatted content with individual block centering
                     if is_m2m_prompt and is_m2m_format(msg.content):
-                        self._insert_formatted_text(cursor, content, char_format)
+                        # Insert M2M content with center alignment for each line
+                        self._insert_centered_m2m_text(cursor, content, char_format)
                         cursor.insertBlock()
+                        
+                        # Reset to justified alignment for subsequent content
+                        block_format = QTextBlockFormat()
+                        block_format.setAlignment(Qt.AlignmentFlag.AlignJustify)
+                        cursor.setBlockFormat(block_format)
                     else:
                         # Use full markdown rendering for non-M2M to support tables and rich MD
                         content_html = self._markdown_to_pdf_html(content)
@@ -2388,28 +2394,58 @@ class ChatWindow(QtWidgets.QMainWindow):
                             content = format_m2m_to_markdown(parsed_data)
                     
                     # Convert markdown to HTML
-                    # Keep existing flow for M2M-formatted content, but center the whole block
+                    # Handle M2M-formatted content with centered alignment
                     if is_m2m_prompt and is_m2m_format(msg.content):
-                        # Create a table for centered content
-                        content_html = self._simple_markdown_to_html(content)
-                        lines = content_html.split('\n')
+                        # Set center alignment for M2M content
+                        block_format = QTextBlockFormat()
+                        block_format.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                        cursor.setBlockFormat(block_format)
                         
-                        # Start table with 100% width
-                        cursor.insertHtml('<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin: 0; padding: 0;">')
+                        # Split content into lines for fine-grained control
+                        lines = content.split('\n')
+                        in_coordinates = False
                         
-                        for line in lines:
-                            if line.strip():
-                                # Each line in a centered table cell
-                                cursor.insertHtml(
-                                    '<tr><td align="center" style="text-align: center;">' +
-                                    line +
-                                    '</td></tr>'
-                                )
-                            else:
-                                cursor.insertHtml('<tr><td>&nbsp;</td></tr>')
+                        for i, line in enumerate(lines):
+                            if not line.strip():
+                                # Empty line - add block with normal spacing
+                                cursor.setBlockFormat(block_format)
+                                cursor.insertBlock()
+                                continue
+                            
+                            # Check if this is the coordinates section
+                            if line.strip() == "Coordinates:":
+                                in_coordinates = True
+                                # Insert the header
+                                cursor.setBlockFormat(block_format)
+                                cursor.insertHtml(self._markdown_to_pdf_html(line))
+                                cursor.insertBlock()
+                                continue
+                            
+                            # Handle coordinate lines
+                            if in_coordinates and line.strip().startswith('•'):
+                                # Special format for coordinates
+                                coord_format = QTextBlockFormat()
+                                coord_format.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                                coord_format.setIndent(1)  # Use indent instead of margin
+                                coord_format.setTextIndent(20)  # Indent first line (bullet point)
+                                coord_format.setBottomMargin(4)  # Small gap between coordinates
+                                cursor.setBlockFormat(coord_format)
+                                
+                                # Insert coordinate
+                                cursor.insertHtml(self._markdown_to_pdf_html(line))
+                                cursor.insertBlock()
+                                continue
+                            
+                            # Regular line - convert to HTML to preserve formatting
+                            cursor.setBlockFormat(block_format)
+                            line_html = self._markdown_to_pdf_html(line)
+                            cursor.insertHtml(line_html)
+                            cursor.insertBlock()
                         
-                        # Close table
-                        cursor.insertHtml('</table>')
+                        # Reset to default alignment for subsequent content
+                        block_format = QTextBlockFormat()
+                        block_format.setAlignment(Qt.AlignmentFlag.AlignLeft)
+                        cursor.setBlockFormat(block_format)
                     else:
                         content_html = self._markdown_to_pdf_html(content)
                         cursor.insertHtml(f"<div>{content_html}</div>")
@@ -2428,6 +2464,11 @@ class ChatWindow(QtWidgets.QMainWindow):
         """Render markdown to HTML suitable for QTextDocument/PDF, with table styling."""
         # Reuse the chat UI renderer which supports tables, fenced code, etc.
         html_fragment = MessageRow._render_markdown(markdown_text)
+        
+        # Ensure inline styles are preserved (especially for M2M centering)
+        # Add display: block to ensure divs take full width for proper centering
+        html_fragment = html_fragment.replace('style="', 'style="display: block; ')
+        
         styled = self._style_tables_for_pdf(html_fragment)
         # Split into table and non-table segments; force non-table segments to normal weight
         import re as _re
@@ -2583,6 +2624,85 @@ class ChatWindow(QtWidgets.QMainWindow):
         bf.setBottomMargin(bottom_pt)
         cursor.setBlockFormat(bf)
     
+    def _insert_centered_m2m_text(self, cursor: QtGui.QTextCursor, text: str, base_format: QtGui.QTextCharFormat) -> None:
+        """Insert M2M text with each line individually centered."""
+        import re
+        from PySide6.QtGui import QTextCharFormat, QTextBlockFormat
+        from PySide6.QtCore import Qt
+        
+        # Process the text line by line
+        lines = text.split('\n')
+        
+        for i, line in enumerate(lines):
+            # Reset to base format for each line
+            cursor.setCharFormat(base_format)
+            
+            # Skip empty lines but still insert a block (only if not the first line)
+            if not line.strip():
+                if i < len(lines) - 1 and i > 0:
+                    # Create centered block format for empty lines
+                    block_format = QTextBlockFormat()
+                    block_format.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    cursor.insertBlock(block_format)
+                continue
+            
+            # Set center alignment for this line
+            block_format = QTextBlockFormat()
+            block_format.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            
+            # Handle headers
+            if line.startswith('# '):
+                # Apply block format with center alignment and margins
+                if i > 0:
+                    block_format.setTopMargin(8)
+                    block_format.setBottomMargin(3)
+                cursor.setBlockFormat(block_format)
+                
+                format = QTextCharFormat(base_format)
+                format.setFontPointSize(10.5)
+                format.setFontWeight(QtGui.QFont.Weight.Bold)
+                cursor.setCharFormat(format)
+                cursor.insertText(line[2:].strip())
+            elif line.startswith('## '):
+                # Apply block format with center alignment and margins
+                if i > 0:
+                    block_format.setTopMargin(6)
+                    block_format.setBottomMargin(2)
+                cursor.setBlockFormat(block_format)
+                
+                format = QTextCharFormat(base_format)
+                format.setFontPointSize(10.5)
+                format.setFontWeight(QtGui.QFont.Weight.Bold)
+                cursor.setCharFormat(format)
+                cursor.insertText(line[3:].strip())
+            elif line.startswith('### '):
+                # Apply block format with center alignment and margins
+                if i > 0:
+                    block_format.setTopMargin(4)
+                    block_format.setBottomMargin(2)
+                cursor.setBlockFormat(block_format)
+                
+                format = QTextCharFormat(base_format)
+                format.setFontPointSize(10.5)
+                format.setFontWeight(QtGui.QFont.Weight.Bold)
+                cursor.setCharFormat(format)
+                cursor.insertText(line[4:].strip())
+            elif line.startswith('- ') or line.startswith('* '):
+                # Handle list items with center alignment
+                cursor.setBlockFormat(block_format)
+                cursor.insertText('• ' + line[2:].strip())
+            else:
+                # Handle inline formatting with center alignment
+                cursor.setBlockFormat(block_format)
+                self._insert_inline_formatted_text(cursor, line, base_format)
+            
+            # Add line break except for last line, maintaining center alignment
+            if i < len(lines) - 1:
+                # Create centered block format for line spacing
+                next_block_format = QTextBlockFormat()
+                next_block_format.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                cursor.insertBlock(next_block_format)
+
     def _insert_formatted_text(self, cursor: QtGui.QTextCursor, text: str, base_format: QtGui.QTextCharFormat) -> None:
         """Insert text with markdown formatting using Qt's native formatting."""
         import re
