@@ -2234,8 +2234,8 @@ class ChatWindow(QtWidgets.QMainWindow):
             # Minimalist formatting using Qt's native formatting
             first_qa = True
             
-            # Set default font for the document
-            font = QtGui.QFont("Georgia", 10)
+            # Set default font for the document to match non-M2M body (10.5pt)
+            font = QtGui.QFont("Georgia", 10.5)
             document.setDefaultFont(font)
             
             for msg in self.session.messages:
@@ -2259,6 +2259,7 @@ class ChatWindow(QtWidgets.QMainWindow):
                     cursor.setBlockFormat(block_format)
                     
                     char_format = QTextCharFormat()
+                    # User question size should remain larger than tables
                     char_format.setFont(QtGui.QFont("Georgia", 13))
                     char_format.setFontItalic(True)
                     char_format.setForeground(QtGui.QColor("#4a4a4a"))
@@ -2286,7 +2287,8 @@ class ChatWindow(QtWidgets.QMainWindow):
                     cursor.setBlockFormat(block_format)
                     
                     char_format = QTextCharFormat()
-                    char_format.setFont(QtGui.QFont("Georgia", 11))
+                    # Separator glyph size aligned with body
+                    char_format.setFont(QtGui.QFont("Georgia", 10.5))
                     char_format.setForeground(QtGui.QColor("#b0b0b0"))
                     cursor.setCharFormat(char_format)
                     
@@ -2304,7 +2306,8 @@ class ChatWindow(QtWidgets.QMainWindow):
                         cursor.setBlockFormat(block_format)
                         
                         char_format = QTextCharFormat()
-                        char_format.setFont(QtGui.QFont("Georgia", 11))
+                        # Thinking block aligned with non-M2M body size
+                        char_format.setFont(QtGui.QFont("Georgia", 10.5))
                         char_format.setFontItalic(True)
                         char_format.setForeground(QtGui.QColor("#6a6a6a"))
                         cursor.setCharFormat(char_format)
@@ -2330,7 +2333,8 @@ class ChatWindow(QtWidgets.QMainWindow):
                     cursor.setBlockFormat(block_format)
                     
                     char_format = QTextCharFormat()
-                    char_format.setFont(QtGui.QFont("Georgia", 11))
+                    # Assistant answer aligned with non-M2M body size
+                    char_format.setFont(QtGui.QFont("Georgia", 10.5))
                     char_format.setForeground(QtGui.QColor("#2c2c2c"))
                     cursor.setCharFormat(char_format)
                     
@@ -2494,7 +2498,8 @@ class ChatWindow(QtWidgets.QMainWindow):
                     cursor.setBlockFormat(block_format)
                 
                 format = QTextCharFormat(base_format)
-                format.setFontPointSize(18)
+                # Match non-M2M body size (10.5pt)
+                format.setFontPointSize(10.5)
                 format.setFontWeight(QtGui.QFont.Weight.Bold)
                 cursor.setCharFormat(format)
                 cursor.insertText(line[2:].strip())
@@ -2507,7 +2512,8 @@ class ChatWindow(QtWidgets.QMainWindow):
                     cursor.setBlockFormat(block_format)
                 
                 format = QTextCharFormat(base_format)
-                format.setFontPointSize(16)
+                # Match non-M2M body size (10.5pt)
+                format.setFontPointSize(10.5)
                 format.setFontWeight(QtGui.QFont.Weight.Bold)
                 cursor.setCharFormat(format)
                 cursor.insertText(line[3:].strip())
@@ -2520,7 +2526,8 @@ class ChatWindow(QtWidgets.QMainWindow):
                     cursor.setBlockFormat(block_format)
                 
                 format = QTextCharFormat(base_format)
-                format.setFontPointSize(14)
+                # Match non-M2M body size (10.5pt)
+                format.setFontPointSize(10.5)
                 format.setFontWeight(QtGui.QFont.Weight.Bold)
                 cursor.setCharFormat(format)
                 cursor.insertText(line[4:].strip())
