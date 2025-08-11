@@ -2200,13 +2200,20 @@ class ChatWindow(QtWidgets.QMainWindow):
         # Create document
         document = QTextDocument()
         cursor = QTextCursor(document)
+        # Set page metrics so percentage widths and text measurements are accurate
+        try:
+            page_rect_pts = printer.pageLayout().paintRect(QtGui.QPageLayout.Unit.Point)
+            document.setPageSize(page_rect_pts.size())
+            document.setTextWidth(page_rect_pts.width())
+        except Exception:
+            pass
         
         if minimalist_style:
-            # Wider margins for a more literary feel
-            printer.setPageMargins(QtCore.QMarginsF(35, 35, 35, 35), QtGui.QPageLayout.Unit.Millimeter)
+            # Minimal margins for a tighter layout while retaining the literary feel
+            printer.setPageMargins(QtCore.QMarginsF(12, 12, 12, 12), QtGui.QPageLayout.Unit.Millimeter)
         else:
-            # Standard margins
-            printer.setPageMargins(QtCore.QMarginsF(20, 20, 20, 20), QtGui.QPageLayout.Unit.Millimeter)
+            # Very minimal standard margins
+            printer.setPageMargins(QtCore.QMarginsF(8, 8, 8, 8), QtGui.QPageLayout.Unit.Millimeter)
             
             # Standard document styles
             document.setDefaultStyleSheet("""
@@ -2342,6 +2349,7 @@ class ChatWindow(QtWidgets.QMainWindow):
                     # Keep existing flow for M2M-formatted content
                     if is_m2m_prompt and is_m2m_format(msg.content):
                         self._insert_formatted_text(cursor, content, char_format)
+                        cursor.insertBlock()
                     else:
                         # Use full markdown rendering for non-M2M to support tables and rich MD
                         content_html = self._markdown_to_pdf_html(content)
@@ -2380,12 +2388,31 @@ class ChatWindow(QtWidgets.QMainWindow):
                             content = format_m2m_to_markdown(parsed_data)
                     
                     # Convert markdown to HTML
-                    # Keep existing flow for M2M-formatted content
+                    # Keep existing flow for M2M-formatted content, but center the whole block
                     if is_m2m_prompt and is_m2m_format(msg.content):
+                        # Create a table for centered content
                         content_html = self._simple_markdown_to_html(content)
+                        lines = content_html.split('\n')
+                        
+                        # Start table with 100% width
+                        cursor.insertHtml('<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin: 0; padding: 0;">')
+                        
+                        for line in lines:
+                            if line.strip():
+                                # Each line in a centered table cell
+                                cursor.insertHtml(
+                                    '<tr><td align="center" style="text-align: center;">' +
+                                    line +
+                                    '</td></tr>'
+                                )
+                            else:
+                                cursor.insertHtml('<tr><td>&nbsp;</td></tr>')
+                        
+                        # Close table
+                        cursor.insertHtml('</table>')
                     else:
                         content_html = self._markdown_to_pdf_html(content)
-                    cursor.insertHtml(f"<div>{content_html}</div>")
+                        cursor.insertHtml(f"<div>{content_html}</div>")
                     
                 elif msg.role == "system" and include_system:
                     cursor.insertHtml("<h2>System</h2>")
@@ -2469,6 +2496,92 @@ class ChatWindow(QtWidgets.QMainWindow):
             html_text = f'{html_text}</p>'
         
         return html_text
+
+    def _begin_centered_frame(self, cursor: QtGui.QTextCursor, percent_width: int = 70) -> QtGui.QTextFrame:
+        """Begin a centered container by inserting a 1x1 QTextTable of given width.
+        The table is horizontally centered, and its single cell becomes the content area
+        so wrapped lines share the same left margin (no per-line centering).
+        Returns the created QTextTable (which is also a QTextFrame).
+        """
+        from PySide6.QtGui import QTextTableFormat
+        from PySide6.QtCore import Qt as _Qt
+        pct = max(10, min(100, percent_width))
+        tf = QTextTableFormat()
+        tf.setWidth(QtGui.QTextLength(QtGui.QTextLength.Type.PercentageLength, pct))
+        tf.setAlignment(_Qt.AlignmentFlag.AlignHCenter)
+        # Mirror page padding: no extra left/right margins so centering is relative to page text area
+        tf.setBorder(0)
+        tf.setCellPadding(0)
+        tf.setCellSpacing(0)
+        table = cursor.insertTable(1, 1, tf)
+        return table
+
+    def _begin_centered_block_for_text(self, cursor: QtGui.QTextCursor, text: str, font: QtGui.QFont) -> QtGui.QTextTable:
+        """Center a 1x1 table whose fixed width equals the longest line's width (in points).
+        This centers the whole response and keeps internal lines left-aligned to the same margin.
+        """
+        from PySide6.QtGui import QFontMetrics, QGuiApplication
+        lines = [ln for ln in text.split('\n') if ln.strip()]
+        if not lines:
+            lines = [text]
+        # Use tight width based on longest line after stripping markdown emphasis characters
+        def _visible_width(src: str) -> int:
+            import re as __re
+            s = __re.sub(r"[*_`]+", "", src)
+            return QFontMetrics(font).horizontalAdvance(s)
+        max_px = max(_visible_width(ln) for ln in lines)
+        # Convert pixels to points using screen DPI
+        screen = QGuiApplication.primaryScreen()
+        dpi = screen.logicalDotsPerInchX() if screen else 96.0
+        width_pt = (max_px * 72.0 / dpi) + 8.0  # add ~8pt padding
+        # Use full available text width to avoid unwanted wrapping; only clamp to page width
+        available_pt = float(cursor.document().textWidth() or cursor.document().pageSize().width() or width_pt)
+        width_pt = min(width_pt, available_pt)
+        # Build centered 1x1 table with fixed width in points
+        from PySide6.QtGui import QTextTableFormat
+        from PySide6.QtCore import Qt as _Qt
+        tf = QTextTableFormat()
+        tf.setWidth(QtGui.QTextLength(QtGui.QTextLength.Type.FixedLength, width_pt))
+        tf.setAlignment(_Qt.AlignmentFlag.AlignHCenter)
+        tf.setBorder(0)
+        tf.setCellPadding(0)
+        tf.setCellSpacing(0)
+        return cursor.insertTable(1, 1, tf)
+
+    def _compute_center_margin_for_text(self, document: QtGui.QTextDocument, text: str, font: QtGui.QFont) -> float:
+        """Compute symmetric left/right margins (in points) so the block centers to the page's text area
+        based on the longest visible line width. Avoids wrapping by not capping width arbitrarily.
+        """
+        from PySide6.QtGui import QFontMetrics, QGuiApplication
+        import re as _re
+        metrics = QFontMetrics(font)
+        # Strip emphasis chars for width
+        lines = [ln for ln in text.split('\n') if ln.strip()]
+        if not lines:
+            lines = [text]
+        def _visible_width(src: str) -> int:
+            s = _re.sub(r"[*_`]+", "", src)
+            return metrics.horizontalAdvance(s)
+        max_px = max(_visible_width(ln) for ln in lines)
+        # Convert px to pt
+        screen = QGuiApplication.primaryScreen()
+        dpi_x = screen.logicalDotsPerInchX() if screen else 96.0
+        content_pt = (max_px * 72.0 / dpi_x)
+        # Available width in pt (document text width)
+        available_pt = float(document.textWidth() or document.pageSize().width() or content_pt)
+        content_pt = min(content_pt, available_pt)
+        margin = max(0.0, (available_pt - content_pt) / 2.0)
+        # Small padding to avoid touching margins
+        return max(0.0, margin)
+
+    def _set_block_margins(self, cursor: QtGui.QTextCursor, left_pt: float = 0.0, right_pt: float = 0.0, top_pt: float = 0.0, bottom_pt: float = 0.0) -> None:
+        """Apply margins to the current block format at the cursor."""
+        bf = QtGui.QTextBlockFormat()
+        bf.setLeftMargin(left_pt)
+        bf.setRightMargin(right_pt)
+        bf.setTopMargin(top_pt)
+        bf.setBottomMargin(bottom_pt)
+        cursor.setBlockFormat(bf)
     
     def _insert_formatted_text(self, cursor: QtGui.QTextCursor, text: str, base_format: QtGui.QTextCharFormat) -> None:
         """Insert text with markdown formatting using Qt's native formatting."""
@@ -2594,7 +2707,7 @@ class ChatWindow(QtWidgets.QMainWindow):
         # Convert inline code
         html_text = re.sub(r'`([^`]+)`', r'<code>\1</code>', html_text)
         
-        # Convert headers
+        # Convert headers (let Qt handle alignment)
         html_text = re.sub(r'^### (.+)$', r'<h3>\1</h3>', html_text, flags=re.MULTILINE)
         html_text = re.sub(r'^## (.+)$', r'<h2>\1</h2>', html_text, flags=re.MULTILINE)
         html_text = re.sub(r'^# (.+)$', r'<h1>\1</h1>', html_text, flags=re.MULTILINE)
@@ -2618,7 +2731,10 @@ class ChatWindow(QtWidgets.QMainWindow):
                 if in_list and line.strip():
                     processed_lines.append('</ul>')
                     in_list = False
-                processed_lines.append(line)
+                if line.strip():
+                    processed_lines.append(f'<p style="text-align: center; margin: 0;">{line}</p>')
+                else:
+                    processed_lines.append(line)
         
         # Close any open list
         if in_list:
@@ -2632,13 +2748,17 @@ class ChatWindow(QtWidgets.QMainWindow):
         # Convert italic
         html_text = re.sub(r'\*([^*]+)\*', r'<i>\1</i>', html_text)
         
-        # Convert line breaks - only for lines ending with two spaces (markdown convention)
-        # This prevents double spacing in PDF
+        # Process lines and force center alignment at every level
         lines = html_text.split('\n')
-        for i in range(len(lines) - 1):
-            if lines[i].endswith('  '):
-                lines[i] = lines[i].rstrip() + '<br/>'
-        html_text = ' '.join(lines)
+        processed_lines = []
+        for line in lines:
+            if line.strip():
+                # Wrap each non-empty line in centered paragraph
+                processed_lines.append(f'<p style="text-align: center !important; margin: 0; width: 100%;">{line}</p>')
+            else:
+                # Empty lines become line breaks
+                processed_lines.append("<br/>")
+        html_text = '\n'.join(processed_lines)
         
         return html_text
 
