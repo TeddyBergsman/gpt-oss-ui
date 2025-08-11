@@ -575,12 +575,103 @@ class MultiShotMessageRow(MessageRow):
         self._content_wrap.insertWidget(bubble_index, selector_container)
     
     def _calculate_temperature(self, index: int) -> float:
-        """Calculate temperature for given index."""
-        if self.response_count == 1:
-            return 0.7
-        min_temp, max_temp = 0.3, 1.2
-        step = (max_temp - min_temp) / (self.response_count - 1)
-        return round(min_temp + index * step, 1)
+        """Calculate temperature for given index using the same algorithm as MultiShotWorker."""
+        # This should match the algorithm in MultiShotWorker._calculate_temperatures
+        # For simplicity in display, we'll create the full list and return the indexed value
+        temps = self._calculate_all_temperatures()
+        return temps[index] if index < len(temps) else 0.7
+    
+    def _calculate_all_temperatures(self) -> List[float]:
+        """Calculate all temperatures using the same algorithm as MultiShotWorker."""
+        count = self.response_count
+        
+        if count == 1:
+            return [0.7]
+        
+        if count == 2:
+            return [0.4, 0.9]
+        
+        # For smaller counts, use log-uniform distribution
+        if count <= 10:
+            min_temp, max_temp = 0.2, 1.2
+            temps = []
+            for i in range(count):
+                log_min = math.log(min_temp)
+                log_max = math.log(max_temp)
+                log_temp = log_min + (log_max - log_min) * (i / (count - 1))
+                temp = math.exp(log_temp)
+                temps.append(round(temp, 2))
+            return temps
+        
+        # For larger counts, use sophisticated distribution
+        temps = []
+        
+        if count <= 15:
+            core_samples = int(count * 0.5)
+            extended_samples = int(count * 0.3)
+            exploratory_samples = count - core_samples - extended_samples
+            
+            for i in range(core_samples):
+                t = 0.3 + (0.5 * i / max(1, core_samples - 1))
+                temps.append(round(t, 2))
+            
+            for i in range(extended_samples):
+                t = 0.8 + (0.4 * i / max(1, extended_samples - 1))
+                temps.append(round(t, 2))
+            
+            for i in range(exploratory_samples):
+                if i < exploratory_samples // 2:
+                    t = 0.1 + (0.2 * i / max(1, exploratory_samples // 2))
+                else:
+                    idx = i - exploratory_samples // 2
+                    t = 1.2 + (0.3 * idx / max(1, exploratory_samples - exploratory_samples // 2 - 1))
+                temps.append(round(t, 2))
+        else:
+            core_samples = int(count * 0.4)
+            extended_samples = int(count * 0.3)
+            low_exploratory = int(count * 0.2)
+            high_exploratory = count - core_samples - extended_samples - low_exploratory
+            
+            for i in range(core_samples):
+                t = 0.3 + (0.5 * i / max(1, core_samples - 1))
+                temps.append(round(t, 2))
+            
+            for i in range(extended_samples):
+                t = 0.8 + (0.4 * i / max(1, extended_samples - 1))
+                temps.append(round(t, 2))
+            
+            for i in range(low_exploratory):
+                t = 0.1 + (0.2 * i / max(1, low_exploratory - 1))
+                temps.append(round(t, 2))
+            
+            for i in range(high_exploratory):
+                t = 1.2 + (0.8 * i / max(1, high_exploratory - 1))
+                temps.append(round(t, 2))
+        
+        temps.sort()
+        
+        # Remove duplicates
+        seen = set()
+        unique_temps = []
+        for t in temps:
+            if t not in seen:
+                seen.add(t)
+                unique_temps.append(t)
+        
+        # Fill gaps if needed
+        while len(unique_temps) < count:
+            max_gap = 0
+            max_gap_idx = 0
+            for i in range(len(unique_temps) - 1):
+                gap = unique_temps[i + 1] - unique_temps[i]
+                if gap > max_gap:
+                    max_gap = gap
+                    max_gap_idx = i
+            
+            new_temp = round((unique_temps[max_gap_idx] + unique_temps[max_gap_idx + 1]) / 2, 2)
+            unique_temps.insert(max_gap_idx + 1, new_temp)
+        
+        return unique_temps[:count]
     
     def update_progress(self, completed: int, total: int) -> None:
         """Update progress indicator."""
@@ -824,14 +915,120 @@ class MultiShotWorker(QtCore.QObject):
         self.temperatures = self._calculate_temperatures(response_count)
     
     def _calculate_temperatures(self, count: int) -> List[float]:
-        """Generate temperature values distributed from 0.3 to 1.2."""
+        """Generate temperature values with intelligent distribution based on research.
+        
+        Uses a modified log-uniform distribution that concentrates samples in the 
+        productive range (0.3-1.0) while including exploratory samples at higher temps.
+        """
         if count == 1:
             return [0.7]  # Default temperature
         
-        # Distribute temperatures evenly across the range
-        min_temp, max_temp = 0.3, 1.2
-        step = (max_temp - min_temp) / (count - 1)
-        return [round(min_temp + i * step, 1) for i in range(count)]
+        if count == 2:
+            return [0.4, 0.9]  # Low and high within productive range
+        
+        # Define temperature ranges and their sample allocations
+        if count <= 10:
+            # For smaller counts, focus on core productive range
+            min_temp, max_temp = 0.2, 1.2
+            # Use log-uniform distribution concentrated at lower temps
+            temps = []
+            for i in range(count):
+                # Map to log space for better distribution
+                log_min = math.log(min_temp)
+                log_max = math.log(max_temp)
+                log_temp = log_min + (log_max - log_min) * (i / (count - 1))
+                temp = math.exp(log_temp)
+                temps.append(round(temp, 2))
+        else:
+            # For larger counts, use a more sophisticated distribution
+            temps = []
+            
+            # Allocate samples across ranges based on productivity
+            if count <= 15:
+                # 50% in core range (0.3-0.8)
+                # 30% in extended range (0.8-1.2)
+                # 20% in exploratory range (0.1-0.3 and 1.2-1.5)
+                core_samples = int(count * 0.5)
+                extended_samples = int(count * 0.3)
+                exploratory_samples = count - core_samples - extended_samples
+                
+                # Core range with slight log distribution
+                for i in range(core_samples):
+                    t = 0.3 + (0.5 * i / max(1, core_samples - 1))
+                    temps.append(round(t, 2))
+                
+                # Extended range
+                for i in range(extended_samples):
+                    t = 0.8 + (0.4 * i / max(1, extended_samples - 1))
+                    temps.append(round(t, 2))
+                
+                # Exploratory samples
+                for i in range(exploratory_samples):
+                    if i < exploratory_samples // 2:
+                        # Low exploratory
+                        t = 0.1 + (0.2 * i / max(1, exploratory_samples // 2))
+                    else:
+                        # High exploratory
+                        idx = i - exploratory_samples // 2
+                        t = 1.2 + (0.3 * idx / max(1, exploratory_samples - exploratory_samples // 2 - 1))
+                    temps.append(round(t, 2))
+            else:
+                # For 16-20 samples, include more experimental temperatures
+                # 40% in core (0.3-0.8)
+                # 30% in extended (0.8-1.2)
+                # 20% in low exploratory (0.1-0.3)
+                # 10% in high exploratory (1.2-2.0)
+                core_samples = int(count * 0.4)
+                extended_samples = int(count * 0.3)
+                low_exploratory = int(count * 0.2)
+                high_exploratory = count - core_samples - extended_samples - low_exploratory
+                
+                # Core range
+                for i in range(core_samples):
+                    t = 0.3 + (0.5 * i / max(1, core_samples - 1))
+                    temps.append(round(t, 2))
+                
+                # Extended range
+                for i in range(extended_samples):
+                    t = 0.8 + (0.4 * i / max(1, extended_samples - 1))
+                    temps.append(round(t, 2))
+                
+                # Low exploratory
+                for i in range(low_exploratory):
+                    t = 0.1 + (0.2 * i / max(1, low_exploratory - 1))
+                    temps.append(round(t, 2))
+                
+                # High exploratory (up to 2.0 for research purposes)
+                for i in range(high_exploratory):
+                    t = 1.2 + (0.8 * i / max(1, high_exploratory - 1))
+                    temps.append(round(t, 2))
+            
+            # Sort temperatures to ensure ascending order
+            temps.sort()
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_temps = []
+        for t in temps:
+            if t not in seen:
+                seen.add(t)
+                unique_temps.append(t)
+        
+        # If we have fewer unique temps than requested, fill with intermediate values
+        while len(unique_temps) < count:
+            # Find largest gap and insert midpoint
+            max_gap = 0
+            max_gap_idx = 0
+            for i in range(len(unique_temps) - 1):
+                gap = unique_temps[i + 1] - unique_temps[i]
+                if gap > max_gap:
+                    max_gap = gap
+                    max_gap_idx = i
+            
+            new_temp = round((unique_temps[max_gap_idx] + unique_temps[max_gap_idx + 1]) / 2, 2)
+            unique_temps.insert(max_gap_idx + 1, new_temp)
+        
+        return unique_temps[:count]
     
     def request_stop(self) -> None:
         """Request all workers to stop."""
