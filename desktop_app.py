@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 import html
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 import re
 from datetime import datetime
 import math
@@ -632,11 +632,12 @@ class MultiShotMessageRow(MessageRow):
         )
         self.responses[response_id] = response
     
-    def finalize_synthesis(self, content: str, thinking: str) -> None:
-        """Finalize synthesis and auto-select it."""
+    def finalize_synthesis(self, content: str, thinking: str, auto_select: bool = True) -> None:
+        """Finalize synthesis and optionally auto-select it."""
         self.progress_label.setText("Synthesis complete")
-        # Auto-select synthesis
-        self.response_selector.setCurrentIndex(self.response_count)
+        # Auto-select synthesis only if requested (not when loading from history)
+        if auto_select:
+            self.response_selector.setCurrentIndex(self.response_count)
     
     def _update_current_display(self) -> None:
         """Update the display based on current selection."""
@@ -1657,20 +1658,57 @@ class ChatWindow(QtWidgets.QMainWindow):
         self._render_history()
         self._refresh_chat_history()
 
-    def _append_chat(self, role: str, content: str, thinking: Optional[str] = None, images: Optional[List[Dict[str, str]]] = None) -> None:
+    def _append_chat(self, role: str, content: str, thinking: Optional[str] = None, 
+                     images: Optional[List[Dict[str, str]]] = None, 
+                     multi_shot: Optional[Dict[str, Any]] = None) -> None:
         if role == "user":
             row = MessageRow(role="user", title="You")
             row.set_plain_text(content)
             if images:
                 row.add_images(images)
         else:
-            row = MessageRow(role="assistant", title="Assistant")
-            # Check if M2M system prompt is selected
-            is_m2m = (self.selected_prompt_index < len(SYSTEM_PROMPTS) and 
-                     SYSTEM_PROMPTS[self.selected_prompt_index]["name"] == "M2M")
-            row.set_markdown(content, apply_m2m_formatting=is_m2m)
-            if thinking:
-                row.append_reasoning(thinking)
+            # Check if this is a multi-shot response
+            if multi_shot:
+                # Create MultiShotMessageRow and restore all responses
+                row = MultiShotMessageRow(role="assistant", title="Assistant", 
+                                        response_count=multi_shot["response_count"])
+                
+                # Check if M2M system prompt is selected
+                is_m2m = (self.selected_prompt_index < len(SYSTEM_PROMPTS) and 
+                         SYSTEM_PROMPTS[self.selected_prompt_index]["name"] == "M2M")
+                if is_m2m:
+                    row.enable_m2m_formatting()
+                
+                # Restore all responses
+                for response in multi_shot["responses"]:
+                    row._response_accumulators[response["id"]] = response["content"]
+                    if response.get("thinking"):
+                        row._thinking_accumulators[response["id"]] = response["thinking"]
+                    # Finalize the response
+                    row.finalize_response(response["id"], response["content"], 
+                                        response.get("thinking"), response["temperature"])
+                
+                # Restore synthesis
+                synthesis = multi_shot["synthesis"]
+                row._synthesis_accumulator = synthesis["content"]
+                if synthesis.get("thinking"):
+                    row._synthesis_thinking_accumulator = synthesis["thinking"]
+                row.finalize_synthesis(synthesis["content"], synthesis.get("thinking"), auto_select=False)
+                
+                # Hide progress indicator since loading from history
+                row.progress_label.hide()
+                
+                # Select synthesis tab by default when loading from history
+                row.response_selector.setCurrentIndex(row.response_count)
+            else:
+                # Regular message
+                row = MessageRow(role="assistant", title="Assistant")
+                # Check if M2M system prompt is selected
+                is_m2m = (self.selected_prompt_index < len(SYSTEM_PROMPTS) and 
+                         SYSTEM_PROMPTS[self.selected_prompt_index]["name"] == "M2M")
+                row.set_markdown(content, apply_m2m_formatting=is_m2m)
+                if thinking:
+                    row.append_reasoning(thinking)
         # Connect copy toast
         row.copy_btn.clicked.connect(lambda: self._toast.show_message("Copied"))
         self._add_row(row)
@@ -1686,7 +1724,7 @@ class ChatWindow(QtWidgets.QMainWindow):
             if m.role == "user":
                 self._append_chat("user", m.content, images=m.images if m.images else None)
             elif m.role == "assistant":
-                self._append_chat("assistant", m.content, m.thinking)
+                self._append_chat("assistant", m.content, m.thinking, multi_shot=m.multi_shot)
 
     def _on_send(self) -> None:
         user_text = self.input_edit.toPlainText().strip()
@@ -1984,8 +2022,33 @@ class ChatWindow(QtWidgets.QMainWindow):
             # Finalize synthesis and auto-select it
             self._current_multi_shot_bubble.finalize_synthesis(content, thinking)
             
-            # Add the synthesis to session history
-            self.session.add_assistant_message(content, thinking or None)
+            # Prepare multi-shot data for persistence
+            multi_shot_data = {
+                "response_count": self._current_multi_shot_bubble.response_count,
+                "responses": [],
+                "synthesis": {
+                    "content": content,
+                    "thinking": thinking or None
+                }
+            }
+            
+            # Collect all responses
+            for i in range(self._current_multi_shot_bubble.response_count):
+                response_data = {
+                    "id": i,
+                    "content": self._current_multi_shot_bubble._response_accumulators[i],
+                    "thinking": self._current_multi_shot_bubble._thinking_accumulators.get(i, "") or None,
+                    "temperature": self._current_multi_shot_bubble._calculate_temperature(i)
+                }
+                multi_shot_data["responses"].append(response_data)
+            
+            # Add the synthesis to session history with multi-shot data
+            self.session.messages.append(ChatMessage(
+                role="assistant",
+                content=content,
+                thinking=thinking or None,
+                multi_shot=multi_shot_data
+            ))
             
             self._current_multi_shot_bubble = None
         
@@ -2174,7 +2237,8 @@ class ChatWindow(QtWidgets.QMainWindow):
                 role=msg_data["role"],
                 content=msg_data["content"],
                 thinking=msg_data.get("thinking"),
-                images=msg_data.get("images", [])
+                images=msg_data.get("images", []),
+                multi_shot=msg_data.get("multi_shot")
             )
             self.session.messages.append(msg)
         

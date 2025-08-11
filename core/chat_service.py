@@ -23,6 +23,7 @@ class ChatMessage:
     content: str
     thinking: str | None = None
     images: List[Dict[str, str]] = field(default_factory=list)  # List of {"data": base64_str, "type": mime_type}
+    multi_shot: Dict[str, Any] | None = None  # Multi-shot response data (responses, synthesis, temperatures, etc.)
 
 
 @dataclass
