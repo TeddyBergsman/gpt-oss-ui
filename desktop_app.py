@@ -6,6 +6,7 @@ from typing import Optional, List, Dict
 import re
 from datetime import datetime
 import math
+from dataclasses import dataclass
 
 from PySide6 import QtCore, QtGui, QtWidgets
 from ollama import chat as ollama_chat
@@ -517,6 +518,180 @@ class MessageRow(QtWidgets.QWidget):
             getattr(w, "scroll_to_bottom_if_needed")()
 
 
+class MultiShotMessageRow(MessageRow):
+    """Extended MessageRow that includes a dropdown selector for multiple responses."""
+    
+    def __init__(self, role: str, title: str, response_count: int) -> None:
+        super().__init__(role, title)
+        self.response_count = response_count
+        self.responses: Dict[int, MultiShotResponse] = {}  # Use dict for easy lookup
+        self.current_response_id = 0
+        self._showing_synthesis = False
+        self._response_accumulators: Dict[int, str] = {}  # For streaming content
+        self._thinking_accumulators: Dict[int, str] = {}  # For streaming thinking
+        self._synthesis_accumulator = ""
+        self._synthesis_thinking_accumulator = ""
+        
+        # Initialize accumulators
+        for i in range(response_count):
+            self._response_accumulators[i] = ""
+            self._thinking_accumulators[i] = ""
+        
+        # Create response selector dropdown above the message bubble
+        self._create_response_selector()
+    
+    def _create_response_selector(self) -> None:
+        """Create dropdown selector for responses."""
+        selector_container = QtWidgets.QWidget()
+        selector_layout = QtWidgets.QHBoxLayout(selector_container)
+        selector_layout.setContentsMargins(0, 0, 0, 4)
+        selector_layout.setSpacing(6)
+        
+        # Progress label (shown during generation)
+        self.progress_label = QtWidgets.QLabel(f"Generating responses... (0/{self.response_count})")
+        self.progress_label.setObjectName("msgHeader")
+        self.progress_label.setProperty("meta", True)
+        selector_layout.addWidget(self.progress_label)
+        
+        # Response selector dropdown (show immediately)
+        self.response_selector = QtWidgets.QComboBox()
+        self.response_selector.setMinimumHeight(24)
+        self.response_selector.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Fixed,
+            QtWidgets.QSizePolicy.Policy.Fixed
+        )
+        # Add items with temperature info
+        for i in range(self.response_count):
+            temp = self._calculate_temperature(i)
+            self.response_selector.addItem(f"{i+1} (T:{temp})")
+        self.response_selector.addItem("Synthesis")  # Will be the last item
+        self.response_selector.currentIndexChanged.connect(self._on_response_selected)
+        selector_layout.addWidget(self.response_selector)
+        
+        selector_layout.addStretch(1)
+        
+        # Insert selector above the bubble (after header, before bubble)
+        bubble_index = self._content_wrap.indexOf(self.bubble)
+        self._content_wrap.insertWidget(bubble_index, selector_container)
+    
+    def _calculate_temperature(self, index: int) -> float:
+        """Calculate temperature for given index."""
+        if self.response_count == 1:
+            return 0.7
+        min_temp, max_temp = 0.3, 1.2
+        step = (max_temp - min_temp) / (self.response_count - 1)
+        return round(min_temp + index * step, 1)
+    
+    def update_progress(self, completed: int, total: int) -> None:
+        """Update progress indicator."""
+        self.progress_label.setText(f"Generating responses... ({completed}/{total})")
+        
+        if completed == total:
+            # Just update text, keep both visible
+            self.progress_label.setText("All responses complete. Synthesizing...")
+    
+    def append_response_token(self, response_id: int, token: str) -> None:
+        """Append a streaming token to a response."""
+        self._response_accumulators[response_id] += token
+        
+        # If this is the currently selected response, update display
+        if self.current_response_id == response_id and not self._showing_synthesis:
+            self._update_current_display()
+    
+    def append_response_thinking(self, response_id: int, token: str) -> None:
+        """Append a streaming thinking token to a response."""
+        self._thinking_accumulators[response_id] += token
+        
+        # If this is the currently selected response, update reasoning
+        if self.current_response_id == response_id and not self._showing_synthesis:
+            self.append_reasoning(token)
+    
+    def append_synthesis_token(self, token: str) -> None:
+        """Append a streaming token to synthesis."""
+        self._synthesis_accumulator += token
+        
+        # If synthesis is selected, update display
+        if self._showing_synthesis:
+            self._update_current_display()
+    
+    def append_synthesis_thinking(self, token: str) -> None:
+        """Append a streaming thinking token to synthesis."""
+        self._synthesis_thinking_accumulator += token
+        
+        # If synthesis is selected, update reasoning
+        if self._showing_synthesis:
+            self.append_reasoning(token)
+    
+    def finalize_response(self, response_id: int, content: str, thinking: str, temperature: float) -> None:
+        """Finalize a response when streaming is complete."""
+        response = MultiShotResponse(
+            id=response_id,
+            content=content,
+            thinking=thinking if thinking else None,
+            temperature=temperature
+        )
+        self.responses[response_id] = response
+    
+    def finalize_synthesis(self, content: str, thinking: str) -> None:
+        """Finalize synthesis and auto-select it."""
+        self.progress_label.setText("Synthesis complete")
+        # Auto-select synthesis
+        self.response_selector.setCurrentIndex(self.response_count)
+    
+    def _update_current_display(self) -> None:
+        """Update the display based on current selection."""
+        if self._showing_synthesis:
+            content = self._synthesis_accumulator
+        else:
+            content = self._response_accumulators.get(self.current_response_id, "")
+        
+        # Apply M2M formatting if enabled
+        if self._apply_m2m_formatting and is_m2m_format(content):
+            parsed_data = parse_m2m_output(content)
+            if parsed_data:
+                formatted_content = format_m2m_to_markdown(parsed_data)
+                self.text.setHtml(self._wrap_html(self._render_markdown(formatted_content)))
+                self._ensure_parent_scroll_to_bottom()
+                return
+        
+        # Regular markdown rendering
+        self.text.setHtml(self._wrap_html(self._render_markdown(content)))
+        self._ensure_parent_scroll_to_bottom()
+    
+    def _on_response_selected(self, index: int) -> None:
+        """Handle response selection from dropdown."""
+        if index < 0:
+            return
+        
+        # Clear existing reasoning display
+        if hasattr(self, 'reasoning_view'):
+            self.reasoning_view.setHtml(self._wrap_html(""))
+        
+        if index == self.response_count:  # Synthesis
+            self._showing_synthesis = True
+            self.current_response_id = -1
+            # Show synthesis content
+            self._update_current_display()
+            # Show synthesis thinking if any
+            if self._synthesis_thinking_accumulator:
+                self.ensure_reasoning_controls()
+                self.reasoning_view.setHtml(
+                    self._wrap_html(self._render_markdown(self._synthesis_thinking_accumulator))
+                )
+        else:
+            self._showing_synthesis = False
+            self.current_response_id = index
+            # Show selected response
+            self._update_current_display()
+            # Show thinking if any
+            thinking = self._thinking_accumulators.get(index, "")
+            if thinking:
+                self.ensure_reasoning_controls()
+                self.reasoning_view.setHtml(
+                    self._wrap_html(self._render_markdown(thinking))
+                )
+
+
 class StreamWorker(QtCore.QObject):
     token = QtCore.Signal(str)
     thinking = QtCore.Signal(str)
@@ -603,6 +778,217 @@ class StreamWorker(QtCore.QObject):
             
             # Emit empty finished signal to clean up UI state
             self.finished.emit("", "", 0, 0, 0)
+
+
+@dataclass
+class MultiShotResponse:
+    """Container for a single response in multi-shot generation."""
+    id: int
+    content: str
+    thinking: str | None
+    temperature: float
+    thread: Optional[QtCore.QThread] = None
+    worker: Optional[StreamWorker] = None
+
+
+class MultiShotWorker(QtCore.QObject):
+    """Manages parallel generation of multiple responses with temperature variation."""
+    
+    # Streaming signals
+    response_token = QtCore.Signal(int, str)  # response_id, token
+    response_thinking = QtCore.Signal(int, str)  # response_id, thinking_token
+    response_finished = QtCore.Signal(int, str, str, float)  # id, content, thinking, temperature
+    
+    synthesis_token = QtCore.Signal(str)  # synthesis token
+    synthesis_thinking = QtCore.Signal(str)  # synthesis thinking token
+    synthesis_finished = QtCore.Signal(str, str)  # content, thinking
+    
+    all_responses_complete = QtCore.Signal()
+    progress_update = QtCore.Signal(int, int)  # completed, total
+    error = QtCore.Signal(str)
+    
+    def __init__(self, model_name: str, messages: list, base_options: dict, 
+                 response_count: int, selected_prompt: str, parent: QtCore.QObject = None) -> None:
+        super().__init__(parent)
+        self.model_name = model_name
+        self.messages = messages
+        self.base_options = base_options
+        self.response_count = response_count
+        self.selected_prompt = selected_prompt  # Store selected system prompt
+        self.responses: List[MultiShotResponse] = []
+        self.completed_count = 0
+        self._stop_requested = False
+        
+        # Calculate temperature distribution
+        self.temperatures = self._calculate_temperatures(response_count)
+    
+    def _calculate_temperatures(self, count: int) -> List[float]:
+        """Generate temperature values distributed from 0.3 to 1.2."""
+        if count == 1:
+            return [0.7]  # Default temperature
+        
+        # Distribute temperatures evenly across the range
+        min_temp, max_temp = 0.3, 1.2
+        step = (max_temp - min_temp) / (count - 1)
+        return [round(min_temp + i * step, 1) for i in range(count)]
+    
+    def request_stop(self) -> None:
+        """Request all workers to stop."""
+        self._stop_requested = True
+        for response in self.responses:
+            if response.worker:
+                response.worker.request_stop()
+        if hasattr(self, 'synthesis_worker'):
+            self.synthesis_worker.request_stop()
+    
+    @QtCore.Slot()
+    def run(self) -> None:
+        """Start generating all responses in parallel."""
+        if self._stop_requested:
+            return
+            
+        # Create and start workers for each temperature IN PARALLEL
+        for i in range(self.response_count):
+            if self._stop_requested:
+                break
+                
+            temperature = self.temperatures[i]
+            options = self.base_options.copy()
+            options["temperature"] = temperature
+            
+            # Create worker and thread
+            thread = QtCore.QThread()
+            worker = StreamWorker(self.model_name, self.messages, options)
+            worker.moveToThread(thread)
+            
+            # Create response container
+            response = MultiShotResponse(
+                id=i,
+                content="",
+                thinking="",
+                temperature=temperature,
+                thread=thread,
+                worker=worker
+            )
+            self.responses.append(response)
+            
+            # Connect streaming signals
+            thread.started.connect(worker.run)
+            
+            # Stream tokens in real-time
+            worker.token.connect(lambda token, id=i: self._on_response_token(id, token))
+            worker.thinking.connect(lambda token, id=i: self._on_response_thinking(id, token))
+            worker.finished.connect(lambda c, t, _, __, ___, id=i: self._on_response_finished(id, c, t))
+            worker.error.connect(self._on_worker_error)
+            worker.finished.connect(worker.deleteLater)
+            thread.finished.connect(thread.deleteLater)
+            
+            # Start thread immediately (parallel execution)
+            thread.start()
+        
+        self.progress_update.emit(0, self.response_count)
+    
+    def _on_response_token(self, response_id: int, token: str) -> None:
+        """Handle streaming token from a response."""
+        if self._stop_requested:
+            return
+        self.responses[response_id].content += token
+        self.response_token.emit(response_id, token)
+    
+    def _on_response_thinking(self, response_id: int, token: str) -> None:
+        """Handle streaming thinking token from a response."""
+        if self._stop_requested:
+            return
+        if self.responses[response_id].thinking is None:
+            self.responses[response_id].thinking = ""
+        self.responses[response_id].thinking += token
+        self.response_thinking.emit(response_id, token)
+    
+    def _on_response_finished(self, response_id: int, content: str, thinking: str) -> None:
+        """Handle completion of a single response."""
+        if self._stop_requested:
+            return
+            
+        response = self.responses[response_id]
+        response.content = content
+        response.thinking = thinking if thinking else None
+        
+        self.completed_count += 1
+        self.progress_update.emit(self.completed_count, self.response_count)
+        self.response_finished.emit(response.id, content, thinking, response.temperature)
+        
+        # Check if all responses are complete
+        if self.completed_count == self.response_count:
+            self.all_responses_complete.emit()
+            if not self._stop_requested:
+                QtCore.QTimer.singleShot(100, self._synthesize_responses)
+    
+    def _on_worker_error(self, error_msg: str) -> None:
+        """Handle errors from individual workers."""
+        # For now, just forward the first error
+        if not self._stop_requested:
+            self.request_stop()
+            self.error.emit(f"Multi-shot generation failed: {error_msg}")
+    
+    def _synthesize_responses(self) -> None:
+        """Synthesize all responses into a final answer."""
+        from system_prompts import SYNTHESIS_PROMPT
+        
+        # Build synthesis prompt with all responses
+        synthesis_content = f"User's original question: {self.messages[-1]['content']}\n\n"
+        synthesis_content += "Here are the different AI responses generated with varying temperature settings:\n\n"
+        
+        for i, response in enumerate(self.responses):
+            synthesis_content += f"=== Response {i+1} (Temperature: {response.temperature}) ===\n"
+            synthesis_content += response.content
+            synthesis_content += "\n\n"
+        
+        synthesis_content += "Please synthesize these responses into a single, high-quality answer."
+        
+        # Combine selected system prompt with synthesis instructions
+        combined_system_prompt = f"{self.selected_prompt}\n\n{SYNTHESIS_PROMPT}"
+        
+        # Create synthesis messages
+        synthesis_messages = [
+            {"role": "system", "content": combined_system_prompt},
+            {"role": "user", "content": synthesis_content}
+        ]
+        
+        # Run synthesis with mid-range temperature
+        synthesis_options = self.base_options.copy()
+        synthesis_options["temperature"] = 0.7
+        
+        # Create synthesis worker
+        self.synthesis_thread = QtCore.QThread()
+        self.synthesis_worker = StreamWorker(self.model_name, synthesis_messages, synthesis_options)
+        self.synthesis_worker.moveToThread(self.synthesis_thread)
+        
+        # Connect synthesis streaming signals
+        self.synthesis_thread.started.connect(self.synthesis_worker.run)
+        self.synthesis_worker.token.connect(self.synthesis_token.emit)
+        self.synthesis_worker.thinking.connect(self.synthesis_thinking.emit)
+        self.synthesis_worker.finished.connect(self._on_synthesis_finished)
+        self.synthesis_worker.error.connect(lambda e: self.error.emit(f"Synthesis failed: {e}"))
+        self.synthesis_worker.finished.connect(self.synthesis_worker.deleteLater)
+        self.synthesis_thread.finished.connect(self.synthesis_thread.deleteLater)
+        
+        # Start synthesis
+        self.synthesis_thread.start()
+    
+    def _on_synthesis_finished(self, content: str, thinking: str, _, __, ___) -> None:
+        """Handle completion of synthesis."""
+        self.synthesis_finished.emit(content, thinking)
+        
+        # Clean up threads
+        for response in self.responses:
+            if response.thread and response.thread.isRunning():
+                response.thread.quit()
+                response.thread.wait(100)
+        
+        if hasattr(self, 'synthesis_thread') and self.synthesis_thread.isRunning():
+            self.synthesis_thread.quit()
+            self.synthesis_thread.wait(100)
+
 
 class ToastOverlay(QtWidgets.QFrame):
     def __init__(self, parent: QtWidgets.QWidget) -> None:
@@ -827,6 +1213,7 @@ class ChatWindow(QtWidgets.QMainWindow):
         self.selected_model_index = 0  # Default to first model (gpt-oss:20b)
         self.current_chat_id: Optional[str] = None  # Track current chat
         self.selected_images: List[Dict[str, str]] = []  # List of {"data": base64_str, "type": mime_type, "path": file_path}
+        self.multi_shot_count = 10  # Default number of parallel responses for multi-shot
 
         self.session = ChatSession(
             base_system_prompt=SYSTEM_PROMPTS[self.selected_prompt_index]["prompt"],
@@ -933,6 +1320,15 @@ class ChatWindow(QtWidgets.QMainWindow):
         self._configure_combo(self.reasoning_combo)
         self.reasoning_label = QtWidgets.QLabel("Reasoning Effort")
         form.addRow(self.reasoning_label, self.reasoning_combo)
+
+        # Multi-shot count spinbox
+        self.multi_shot_spinbox = QtWidgets.QSpinBox()
+        self.multi_shot_spinbox.setRange(2, 20)  # Min 2, max 20 responses
+        self.multi_shot_spinbox.setValue(self.multi_shot_count)
+        self.multi_shot_spinbox.setSuffix(" responses")
+        self.multi_shot_spinbox.setMinimumHeight(32)
+        self.multi_shot_spinbox.valueChanged.connect(self._on_multi_shot_count_changed)
+        form.addRow("Multi-Shot Count", self.multi_shot_spinbox)
 
         card_layout.addLayout(form)
         sidebar_layout.addWidget(card)
@@ -1075,6 +1471,8 @@ class ChatWindow(QtWidgets.QMainWindow):
         else:
             self.send_button.setText("Send")
         self.send_button.clicked.connect(self._on_send)
+        self.send_button.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+        self.send_button.customContextMenuRequested.connect(self._show_send_context_menu)
         input_layout.addWidget(self.send_button)
         
         # Stop button (hidden by default)
@@ -1210,6 +1608,9 @@ class ChatWindow(QtWidgets.QMainWindow):
     def _on_reasoning_changed(self, index: int) -> None:
         self.selected_reasoning_index = index
 
+    def _on_multi_shot_count_changed(self, value: int) -> None:
+        self.multi_shot_count = value
+
     def _update_ui_for_model(self, model_index: int) -> None:
         """Update UI elements based on model capabilities."""
         model_info = config.AVAILABLE_MODELS[model_index]
@@ -1304,6 +1705,40 @@ class ChatWindow(QtWidgets.QMainWindow):
         self._clear_selected_images()
 
         self._start_stream_thread(user_text)
+    
+    def _show_send_context_menu(self, pos: QtCore.QPoint) -> None:
+        """Show context menu for send button with multi-shot option."""
+        menu = QtWidgets.QMenu(self.send_button)
+        
+        # Multi-shot action
+        multi_shot_action = QtGui.QAction(f"Multi-Shot Response ({self.multi_shot_count}x)", menu)
+        if qta:
+            multi_shot_action.setIcon(qta.icon("mdi.layers-outline"))
+        multi_shot_action.triggered.connect(self._on_multi_shot_send)
+        menu.addAction(multi_shot_action)
+        
+        # Show menu at cursor position
+        menu.exec(self.send_button.mapToGlobal(pos))
+    
+    def _on_multi_shot_send(self) -> None:
+        """Handle multi-shot generation request."""
+        user_text = self.input_edit.toPlainText().strip()
+        if not user_text and not self.selected_images:
+            return
+        # If no text but images exist, add a default prompt
+        if not user_text and self.selected_images:
+            user_text = "What's in this image?"
+        self.input_edit.clear()
+
+        # Display user message immediately with images if any
+        self.session.add_user_message(user_text, self.selected_images)
+        self._append_chat("user", user_text, images=self.selected_images)
+        
+        # Clear selected images after sending
+        self._clear_selected_images()
+
+        self._start_multi_shot_stream(user_text)
+    
     def _start_stream_thread(self, user_text: str) -> None:
         # Get current model info
         model_info = config.AVAILABLE_MODELS[self.selected_model_index]
@@ -1429,6 +1864,185 @@ class ChatWindow(QtWidgets.QMainWindow):
         if hasattr(self, "_worker") and self._worker:
             self._worker.request_stop()
             self.stop_button.setEnabled(False)  # Prevent multiple clicks
+        elif hasattr(self, "_multi_shot_worker") and self._multi_shot_worker:
+            self._multi_shot_worker.request_stop()
+            self.stop_button.setEnabled(False)
+
+    def _start_multi_shot_stream(self, user_text: str) -> None:
+        """Start multi-shot generation with temperature variation."""
+        # Get current model info
+        model_info = config.AVAILABLE_MODELS[self.selected_model_index]
+        
+        # Only use reasoning effort if the model supports it
+        if model_info["supports_reasoning"]:
+            reasoning_effort = REASONING_OPTIONS[self.selected_reasoning_index]
+        else:
+            reasoning_effort = ""
+
+        model_messages, model_options, message_to_send = self.session.build_stream_payload(
+            user_input=user_text,
+            add_special_message=self.add_special_message if model_info["supports_compliance"] else False,
+            reasoning_effort=reasoning_effort,
+        )
+        
+        # Create multi-shot message row
+        self._current_multi_shot_bubble = MultiShotMessageRow(
+            role="assistant", 
+            title="Assistant", 
+            response_count=self.multi_shot_count
+        )
+        self._current_multi_shot_bubble.set_plain_text("")
+        
+        # Enable M2M formatting if needed
+        is_m2m = (self.selected_prompt_index < len(SYSTEM_PROMPTS) and 
+                 SYSTEM_PROMPTS[self.selected_prompt_index]["name"] == "M2M")
+        if is_m2m:
+            self._current_multi_shot_bubble.enable_m2m_formatting()
+        
+        self._add_row(self._current_multi_shot_bubble)
+        
+        # Update UI state for streaming
+        self.send_button.hide()
+        self.stop_button.show()
+        self.input_edit.setEnabled(False)
+        
+        # Create multi-shot worker with selected system prompt
+        selected_system_prompt = SYSTEM_PROMPTS[self.selected_prompt_index]["prompt"]
+        self._multi_shot_thread = QtCore.QThread(self)
+        self._multi_shot_worker = MultiShotWorker(
+            self.session.model_name, 
+            model_messages, 
+            model_options,
+            self.multi_shot_count,
+            selected_system_prompt
+        )
+        self._multi_shot_worker.moveToThread(self._multi_shot_thread)
+        
+        # Connect streaming signals
+        self._multi_shot_thread.started.connect(self._multi_shot_worker.run)
+        
+        # Response streaming
+        self._multi_shot_worker.response_token.connect(self._on_multi_shot_token)
+        self._multi_shot_worker.response_thinking.connect(self._on_multi_shot_thinking)
+        self._multi_shot_worker.response_finished.connect(self._on_multi_shot_response_finished)
+        
+        # Synthesis streaming
+        self._multi_shot_worker.synthesis_token.connect(self._on_synthesis_token)
+        self._multi_shot_worker.synthesis_thinking.connect(self._on_synthesis_thinking)
+        self._multi_shot_worker.synthesis_finished.connect(self._on_synthesis_finished)
+        
+        # Progress and control
+        self._multi_shot_worker.progress_update.connect(self._on_multi_shot_progress)
+        self._multi_shot_worker.all_responses_complete.connect(self._on_all_responses_complete)
+        self._multi_shot_worker.error.connect(self._on_multi_shot_error)
+        
+        # Clean up worker when thread finishes
+        self._multi_shot_thread.finished.connect(self._multi_shot_worker.deleteLater)
+        self._multi_shot_thread.finished.connect(self._multi_shot_thread.deleteLater)
+        
+        # Start generation
+        self._multi_shot_thread.start()
+    
+    @QtCore.Slot(int, str)
+    def _on_multi_shot_token(self, response_id: int, token: str) -> None:
+        """Handle streaming token from a response."""
+        if hasattr(self, "_current_multi_shot_bubble") and self._current_multi_shot_bubble:
+            self._current_multi_shot_bubble.append_response_token(response_id, token)
+            self.scroll_to_bottom_if_needed()
+    
+    @QtCore.Slot(int, str)
+    def _on_multi_shot_thinking(self, response_id: int, token: str) -> None:
+        """Handle streaming thinking token from a response."""
+        if hasattr(self, "_current_multi_shot_bubble") and self._current_multi_shot_bubble:
+            self._current_multi_shot_bubble.append_response_thinking(response_id, token)
+            self.scroll_to_bottom_if_needed()
+    
+    @QtCore.Slot(int, str, str, float)
+    def _on_multi_shot_response_finished(self, response_id: int, content: str, thinking: str, temperature: float) -> None:
+        """Handle completion of a single response."""
+        if hasattr(self, "_current_multi_shot_bubble") and self._current_multi_shot_bubble:
+            self._current_multi_shot_bubble.finalize_response(response_id, content, thinking, temperature)
+    
+    @QtCore.Slot(str)
+    def _on_synthesis_token(self, token: str) -> None:
+        """Handle streaming synthesis token."""
+        if hasattr(self, "_current_multi_shot_bubble") and self._current_multi_shot_bubble:
+            self._current_multi_shot_bubble.append_synthesis_token(token)
+            self.scroll_to_bottom_if_needed()
+    
+    @QtCore.Slot(str)
+    def _on_synthesis_thinking(self, token: str) -> None:
+        """Handle streaming synthesis thinking token."""
+        if hasattr(self, "_current_multi_shot_bubble") and self._current_multi_shot_bubble:
+            self._current_multi_shot_bubble.append_synthesis_thinking(token)
+            self.scroll_to_bottom_if_needed()
+    
+    @QtCore.Slot(str, str)
+    def _on_synthesis_finished(self, content: str, thinking: str) -> None:
+        """Handle completion of synthesis."""
+        if hasattr(self, "_current_multi_shot_bubble") and self._current_multi_shot_bubble:
+            # Finalize synthesis and auto-select it
+            self._current_multi_shot_bubble.finalize_synthesis(content, thinking)
+            
+            # Add the synthesis to session history
+            self.session.add_assistant_message(content, thinking or None)
+            
+            self._current_multi_shot_bubble = None
+        
+        # Clean up
+        if hasattr(self, "_multi_shot_thread"):
+            self._multi_shot_thread.quit()
+            self._multi_shot_thread.wait()
+        
+        # Reset UI state
+        self.stop_button.hide()
+        self.send_button.show()
+        self.input_edit.setEnabled(True)
+        self.input_edit.setFocus()
+        
+        # Auto-save
+        self._save_current_chat()
+        self._refresh_chat_history()
+        self.scroll_to_bottom_if_needed()
+    
+    @QtCore.Slot(int, int)
+    def _on_multi_shot_progress(self, completed: int, total: int) -> None:
+        """Update progress indicator."""
+        if hasattr(self, "_current_multi_shot_bubble") and self._current_multi_shot_bubble:
+            self._current_multi_shot_bubble.update_progress(completed, total)
+    
+    @QtCore.Slot()
+    def _on_all_responses_complete(self) -> None:
+        """Handle completion of all responses (before synthesis)."""
+        # Auto-switch to synthesis view when it starts
+        if hasattr(self, "_current_multi_shot_bubble") and self._current_multi_shot_bubble:
+            # When all responses complete, synthesis will start automatically
+            # Select synthesis tab to show it streaming
+            self._current_multi_shot_bubble.response_selector.setCurrentIndex(
+                self._current_multi_shot_bubble.response_count
+            )
+    
+    @QtCore.Slot(str)
+    def _on_multi_shot_error(self, error_msg: str) -> None:
+        """Handle multi-shot generation errors."""
+        # Remove the bubble if it exists
+        if hasattr(self, "_current_multi_shot_bubble") and self._current_multi_shot_bubble:
+            self._current_multi_shot_bubble.deleteLater()
+            self._current_multi_shot_bubble = None
+        
+        # Reset UI state
+        self.stop_button.hide()
+        self.send_button.show()
+        self.input_edit.setEnabled(True)
+        self.input_edit.setFocus()
+        
+        # Show error
+        QtWidgets.QMessageBox.critical(self, "Multi-Shot Error", error_msg)
+        
+        # Clean up thread
+        if hasattr(self, "_multi_shot_thread"):
+            self._multi_shot_thread.quit()
+            self._multi_shot_thread.wait()
 
     # --- Message helpers ---
     def _add_row(self, row: 'MessageRow') -> None:

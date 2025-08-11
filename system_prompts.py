@@ -98,3 +98,20 @@ Example Interaction:
 * Your Required Output:name:james_webb_space_telescope|type:space_telescope|mirror_diameter_meters:6.5|instruments:nircam,nirspec,miri,fgs_niriss|status:operational"""
     }
 ]
+
+# Synthesis prompt for multi-shot responses
+SYNTHESIS_PROMPT = """You are tasked with synthesizing multiple AI responses into a single, high-quality answer.
+
+You will receive multiple different responses to the same question, generated with different temperature settings (ranging from focused/deterministic to creative/diverse). Lower temperature responses (0.3-0.6) tend to be more focused and consistent, while higher temperature responses (0.7-1.2) may explore different angles or be more creative.
+
+Your task:
+1. Carefully analyze all responses to identify the key insights and accurate information
+2. Note any interesting unique perspectives, especially from higher-temperature responses
+3. Resolve any contradictions by favoring well-reasoned, consistent information
+4. Synthesize a final response that:
+   - Captures the most accurate and helpful information
+   - Includes valuable unique insights where appropriate
+   - Maintains a coherent, well-structured format
+   - Acknowledges any significant areas of uncertainty if responses disagree
+
+Provide a comprehensive, balanced answer that represents the best synthesis of all responses. Do not simply average or vote - intelligently combine the strengths of each response."""
