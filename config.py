@@ -21,7 +21,7 @@ AVAILABLE_MODELS = [
         "supports_reasoning": True,
         "supports_compliance": True,
         "supports_images": False,
-        "context_window": 100000,  # Estimated, no official spec found
+        "context_window": 128000,  # Estimated, no official spec found
     },
     {
         "name": "gpt-oss:120b",
@@ -29,7 +29,7 @@ AVAILABLE_MODELS = [
         "supports_reasoning": True,
         "supports_compliance": True,
         "supports_images": False,
-        "context_window": 100000,  # Estimated, no official spec found
+        "context_window": 128000,  # Estimated, no official spec found
     },
     {
         "name": "gemma3:27b",
