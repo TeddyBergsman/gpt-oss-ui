@@ -548,7 +548,8 @@ class MultiShotMessageRow(MessageRow):
         selector_layout.setSpacing(6)
         
         # Progress label (shown during generation)
-        self.progress_label = QtWidgets.QLabel(f"Generating responses... (0/{self.response_count})")
+        first_temp = self._calculate_temperature(0)
+        self.progress_label = QtWidgets.QLabel(f"Generating response 1 of {self.response_count} (T:{first_temp})")
         self.progress_label.setObjectName("msgHeader")
         self.progress_label.setProperty("meta", True)
         selector_layout.addWidget(self.progress_label)
@@ -566,6 +567,7 @@ class MultiShotMessageRow(MessageRow):
             self.response_selector.addItem(f"{i+1} (T:{temp})")
         self.response_selector.addItem("Synthesis")  # Will be the last item
         self.response_selector.currentIndexChanged.connect(self._on_response_selected)
+        self.response_selector.setCurrentIndex(0)  # Start with first response selected
         selector_layout.addWidget(self.response_selector)
         
         selector_layout.addStretch(1)
@@ -675,10 +677,12 @@ class MultiShotMessageRow(MessageRow):
     
     def update_progress(self, completed: int, total: int) -> None:
         """Update progress indicator."""
-        self.progress_label.setText(f"Generating responses... ({completed}/{total})")
-        
-        if completed == total:
-            # Just update text, keep both visible
+        if completed < total:
+            # Show which response is currently generating
+            current = completed + 1
+            self.progress_label.setText(f"Generating response {current} of {total} (T:{self._calculate_temperature(completed)})")
+        elif completed == total:
+            # All responses complete
             self.progress_label.setText("All responses complete. Synthesizing...")
     
     def append_response_token(self, response_id: int, token: str) -> None:
@@ -1041,50 +1045,65 @@ class MultiShotWorker(QtCore.QObject):
     
     @QtCore.Slot()
     def run(self) -> None:
-        """Start generating all responses in parallel."""
+        """Start generating responses sequentially (due to Ollama's internal queuing).
+        
+        While we create separate threads for each response, Ollama serializes
+        requests internally to manage GPU/memory resources. We embrace this by
+        generating responses sequentially and providing clear progress feedback.
+        """
         if self._stop_requested:
             return
-            
-        # Create and start workers for each temperature IN PARALLEL
+        
+        # Initialize response containers for all temperatures
         for i in range(self.response_count):
-            if self._stop_requested:
-                break
-                
             temperature = self.temperatures[i]
-            options = self.base_options.copy()
-            options["temperature"] = temperature
-            
-            # Create worker and thread
-            thread = QtCore.QThread()
-            worker = StreamWorker(self.model_name, self.messages, options)
-            worker.moveToThread(thread)
-            
-            # Create response container
             response = MultiShotResponse(
                 id=i,
                 content="",
                 thinking="",
                 temperature=temperature,
-                thread=thread,
-                worker=worker
+                thread=None,
+                worker=None
             )
             self.responses.append(response)
-            
-            # Connect streaming signals
-            thread.started.connect(worker.run)
-            
-            # Stream tokens in real-time
-            worker.token.connect(lambda token, id=i: self._on_response_token(id, token))
-            worker.thinking.connect(lambda token, id=i: self._on_response_thinking(id, token))
-            worker.finished.connect(lambda c, t, _, __, ___, id=i: self._on_response_finished(id, c, t))
-            worker.error.connect(self._on_worker_error)
-            worker.finished.connect(worker.deleteLater)
-            thread.finished.connect(thread.deleteLater)
-            
-            # Start thread immediately (parallel execution)
-            thread.start()
         
-        self.progress_update.emit(0, self.response_count)
+        # Don't emit 0 progress here since it would show "response 1" when we haven't started yet
+        # The UI already shows the correct initial message
+        
+        # Start generating the first response
+        self._start_next_response(0)
+    
+    def _start_next_response(self, response_id: int) -> None:
+        """Start generating a single response."""
+        if self._stop_requested or response_id >= self.response_count:
+            return
+        
+        temperature = self.temperatures[response_id]
+        options = self.base_options.copy()
+        options["temperature"] = temperature
+        
+        # Create worker and thread for this response
+        thread = QtCore.QThread()
+        worker = StreamWorker(self.model_name, self.messages, options)
+        worker.moveToThread(thread)
+        
+        # Update response container
+        self.responses[response_id].thread = thread
+        self.responses[response_id].worker = worker
+        
+        # Connect streaming signals
+        thread.started.connect(worker.run)
+        
+        # Stream tokens in real-time
+        worker.token.connect(lambda token, id=response_id: self._on_response_token(id, token))
+        worker.thinking.connect(lambda token, id=response_id: self._on_response_thinking(id, token))
+        worker.finished.connect(lambda c, t, _, __, ___, id=response_id: self._on_response_finished(id, c, t))
+        worker.error.connect(self._on_worker_error)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        
+        # Start this response
+        thread.start()
     
     def _on_response_token(self, response_id: int, token: str) -> None:
         """Handle streaming token from a response."""
@@ -1115,8 +1134,14 @@ class MultiShotWorker(QtCore.QObject):
         self.progress_update.emit(self.completed_count, self.response_count)
         self.response_finished.emit(response.id, content, thinking, response.temperature)
         
+        # Start the next response (sequential generation)
+        next_id = response_id + 1
+        if next_id < self.response_count:
+            # Small delay to ensure UI updates properly
+            QtCore.QTimer.singleShot(50, lambda: self._start_next_response(next_id))
+        
         # Check if all responses are complete
-        if self.completed_count == self.response_count:
+        elif self.completed_count == self.response_count:
             self.all_responses_complete.emit()
             if not self._stop_requested:
                 QtCore.QTimer.singleShot(100, self._synthesize_responses)
@@ -2236,6 +2261,12 @@ class ChatWindow(QtWidgets.QMainWindow):
         """Handle completion of a single response."""
         if hasattr(self, "_current_multi_shot_bubble") and self._current_multi_shot_bubble:
             self._current_multi_shot_bubble.finalize_response(response_id, content, thinking, temperature)
+            
+            # Auto-switch to next response as they complete (except for the last one)
+            # This provides visual feedback of progress through the responses
+            if response_id < self._current_multi_shot_bubble.response_count - 1:
+                # Switch to the next response that's about to generate
+                self._current_multi_shot_bubble.response_selector.setCurrentIndex(response_id + 1)
     
     @QtCore.Slot(str)
     def _on_synthesis_token(self, token: str) -> None:
