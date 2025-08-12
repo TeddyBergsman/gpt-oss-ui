@@ -24,6 +24,9 @@ class ChatMessage:
     thinking: str | None = None
     images: List[Dict[str, str]] = field(default_factory=list)  # List of {"data": base64_str, "type": mime_type}
     multi_shot: Dict[str, Any] | None = None  # Multi-shot response data (responses, synthesis, temperatures, etc.)
+    reasoning_time: float | None = None  # Time taken for reasoning phase
+    response_time: float | None = None  # Time taken for response phase
+    token_count: int | None = None  # Number of tokens in the response
 
 
 @dataclass
@@ -92,9 +95,23 @@ class ChatSession:
         images_copy = deepcopy(images) if images else []
         self.messages.append(ChatMessage(role="user", content=content, images=images_copy))
 
-    def add_assistant_message(self, content: str, thinking: str | None) -> None:
+    def add_assistant_message(
+        self, 
+        content: str, 
+        thinking: str | None,
+        reasoning_time: float | None = None,
+        response_time: float | None = None,
+        token_count: int | None = None
+    ) -> None:
         self.messages.append(
-            ChatMessage(role="assistant", content=content, thinking=thinking or None)
+            ChatMessage(
+                role="assistant",
+                content=content,
+                thinking=thinking or None,
+                reasoning_time=reasoning_time,
+                response_time=response_time,
+                token_count=token_count
+            )
         )
 
 

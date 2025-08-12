@@ -1877,7 +1877,10 @@ class ChatWindow(QtWidgets.QMainWindow):
 
     def _append_chat(self, role: str, content: str, thinking: Optional[str] = None, 
                      images: Optional[List[Dict[str, str]]] = None, 
-                     multi_shot: Optional[Dict[str, Any]] = None) -> None:
+                     multi_shot: Optional[Dict[str, Any]] = None,
+                     reasoning_time: Optional[float] = None,
+                     response_time: Optional[float] = None,
+                     token_count: Optional[int] = None) -> None:
         if role == "user":
             row = MessageRow(role="user", title="You")
             row.set_plain_text(content)
@@ -1926,6 +1929,12 @@ class ChatWindow(QtWidgets.QMainWindow):
                 row.set_markdown(content, apply_m2m_formatting=is_m2m)
                 if thinking:
                     row.append_reasoning(thinking)
+                # Add performance stats if available
+                if reasoning_time is not None and response_time is not None and token_count is not None:
+                    if response_time > 0:
+                        tokens_per_sec = token_count / response_time
+                        stats = f"{reasoning_time:.1f}s (reasoning) · {response_time:.1f}s (responding) · {tokens_per_sec:.1f} tokens/s"
+                        row.append_stats(stats)
         # Connect copy toast
         row.copy_btn.clicked.connect(lambda: self._toast.show_message("Copied"))
         self._add_row(row)
@@ -1941,7 +1950,11 @@ class ChatWindow(QtWidgets.QMainWindow):
             if m.role == "user":
                 self._append_chat("user", m.content, images=m.images if m.images else None)
             elif m.role == "assistant":
-                self._append_chat("assistant", m.content, m.thinking, multi_shot=m.multi_shot)
+                self._append_chat("assistant", m.content, m.thinking, 
+                                multi_shot=m.multi_shot,
+                                reasoning_time=m.reasoning_time,
+                                response_time=m.response_time,
+                                token_count=m.token_count)
 
     def _on_send(self) -> None:
         user_text = self.input_edit.toPlainText().strip()
@@ -2097,7 +2110,13 @@ class ChatWindow(QtWidgets.QMainWindow):
         
         # Only add to session if we got actual content
         if content:
-            self.session.add_assistant_message(content, thinking or None)
+            self.session.add_assistant_message(
+                content,
+                thinking or None,
+                reasoning_time=reasoning_time,
+                response_time=response_time,
+                token_count=token_count
+            )
         
         if hasattr(self, "_stream_thread"):
             self._stream_thread.quit()
@@ -2264,7 +2283,10 @@ class ChatWindow(QtWidgets.QMainWindow):
                 role="assistant",
                 content=content,
                 thinking=thinking or None,
-                multi_shot=multi_shot_data
+                multi_shot=multi_shot_data,
+                reasoning_time=self._thinking_time if hasattr(self, "_thinking_time") else None,
+                response_time=self._response_time if hasattr(self, "_response_time") else None,
+                token_count=self._token_count if hasattr(self, "_token_count") else None
             ))
             
             self._current_multi_shot_bubble = None
@@ -2455,7 +2477,10 @@ class ChatWindow(QtWidgets.QMainWindow):
                 content=msg_data["content"],
                 thinking=msg_data.get("thinking"),
                 images=msg_data.get("images", []),
-                multi_shot=msg_data.get("multi_shot")
+                multi_shot=msg_data.get("multi_shot"),
+                reasoning_time=msg_data.get("reasoning_time"),
+                response_time=msg_data.get("response_time"),
+                token_count=msg_data.get("token_count")
             )
             self.session.messages.append(msg)
         
