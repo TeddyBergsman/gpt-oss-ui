@@ -1408,7 +1408,7 @@ class ChatWindow(QtWidgets.QMainWindow):
         self.selected_prompt_index = 0
         self.selected_reasoning_index = 0
         self.add_special_message = False
-        self.selected_model_index = 0  # Default to first model (gpt-oss:20b)
+        self.selected_model_index = 0  # Default to first model (gemma3:12b)
         self.current_chat_id: Optional[str] = None  # Track current chat
         self.selected_images: List[Dict[str, str]] = []  # List of {"data": base64_str, "type": mime_type, "path": file_path}
         self.multi_shot_count = 10  # Default number of parallel responses for multi-shot
@@ -1495,6 +1495,26 @@ class ChatWindow(QtWidgets.QMainWindow):
         model_names = [m["display_name"] for m in config.AVAILABLE_MODELS]
         self.model_combo = QtWidgets.QComboBox()
         self.model_combo.addItems(model_names)
+        # Add tooltips with context window information
+        for i, model in enumerate(config.AVAILABLE_MODELS):
+            context_window = model.get("context_window", "Unknown")
+            if isinstance(context_window, int):
+                context_tokens = f"{context_window:,}" if context_window else "Unknown"
+            else:
+                context_tokens = context_window
+            
+            capabilities = []
+            if model.get("supports_reasoning"):
+                capabilities.append("Reasoning")
+            if model.get("supports_images"):
+                capabilities.append("Vision")
+            if model.get("supports_compliance"):
+                capabilities.append("Compliance")
+            
+            cap_str = f"\nCapabilities: {', '.join(capabilities)}" if capabilities else ""
+            tooltip = f"Context Window: {context_tokens} tokens{cap_str}"
+            self.model_combo.setItemData(i, tooltip, QtCore.Qt.ItemDataRole.ToolTipRole)
+        
         self.model_combo.currentIndexChanged.connect(self._on_model_changed)
         self._configure_combo(self.model_combo)
         form.addRow("Model", self.model_combo)
@@ -1585,8 +1605,8 @@ class ChatWindow(QtWidgets.QMainWindow):
         sidebar_container.setWidget(sidebar)
         splitter.addWidget(sidebar_container)
         # Widen to ensure no clipping of content even with right padding
-        sidebar_container.setMinimumWidth(380)
-        sidebar_container.setMaximumWidth(380)
+        sidebar_container.setMinimumWidth(418)
+        sidebar_container.setMaximumWidth(418)
         
         # Load chat history
         self._refresh_chat_history()
