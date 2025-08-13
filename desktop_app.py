@@ -7,6 +7,7 @@ import re
 from datetime import datetime
 import math
 from dataclasses import dataclass
+from collections import defaultdict
 
 from PySide6 import QtCore, QtGui, QtWidgets
 from ollama import chat as ollama_chat
@@ -16,6 +17,10 @@ from system_prompts import SYSTEM_PROMPTS
 from core.chat_service import ChatSession, ChatMessage, REASONING_OPTIONS
 from core.m2m_formatter import parse_m2m_output, format_m2m_to_markdown, is_m2m_format, debug_print_parsed_data
 from core.chat_persistence import ChatPersistence
+from core.ensemble_orchestrator import EnsembleOrchestrator, ModelResponse, EnsembleResponse
+from core.ensemble_synthesis import EnsembleSynthesizer, SynthesisResult
+from core.performance_tracker import PerformanceTracker, QueryPerformance
+from model_configs import EnsembleConfig, ENSEMBLE_MODELS
 from theme import ThemeManager, setup_hidpi_and_font, setup_pre_qapp
 
 try:
@@ -885,6 +890,227 @@ class MultiShotResponse:
     temperature: float
     thread: Optional[QtCore.QThread] = None
     worker: Optional[StreamWorker] = None
+
+
+class EnsembleMessageRow(MessageRow):
+    """Message row for displaying ensemble model responses."""
+    
+    def __init__(self, role: str, title: str = "Ensemble Assistant") -> None:
+        super().__init__(role, title)
+        
+        # Ensemble-specific state
+        self.model_responses: Dict[str, List[ModelResponse]] = {}
+        self.ensemble_response: Optional[EnsembleResponse] = None
+        self.current_model_name: Optional[str] = None
+        self.current_response_id: int = 0
+        self._showing_synthesis = False
+        self._model_accumulators: Dict[str, Dict[int, str]] = {}
+        self._model_thinking_accumulators: Dict[str, Dict[int, str]] = {}
+        self._synthesis_accumulator = ""
+        self._synthesis_thinking_accumulator = ""
+        
+        # Initialize UI components
+        self._init_ensemble_ui()
+        
+        # Performance tracker
+        self.performance_tracker = PerformanceTracker()
+        
+    def _init_ensemble_ui(self) -> None:
+        """Initialize ensemble-specific UI components."""
+        # Create a container for ensemble controls
+        controls_container = QtWidgets.QWidget()
+        controls_container.setObjectName("ensembleControls")
+        controls_layout = QtWidgets.QHBoxLayout(controls_container)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(8)
+        
+        # Progress label
+        self.progress_label = QtWidgets.QLabel("Starting ensemble...")
+        self.progress_label.setObjectName("progressLabel")
+        controls_layout.addWidget(self.progress_label)
+        
+        # Model selector
+        self.model_selector = QtWidgets.QComboBox()
+        self.model_selector.currentIndexChanged.connect(self._on_model_selected)
+        controls_layout.addWidget(self.model_selector)
+        
+        # Response selector for each model
+        self.response_selector = QtWidgets.QComboBox()
+        self.response_selector.currentIndexChanged.connect(self._on_response_selected)
+        controls_layout.addWidget(self.response_selector)
+        
+        controls_layout.addStretch(1)
+        
+        # Insert controls above the bubble (after header, before bubble)
+        bubble_index = self._content_wrap.indexOf(self.bubble)
+        self._content_wrap.insertWidget(bubble_index, controls_container)
+        
+        # Add synthesis as last option
+        self.model_selector.addItem("Synthesis")
+        
+    def add_model(self, model_name: str, display_name: str) -> None:
+        """Add a model to the ensemble."""
+        self.model_selector.insertItem(self.model_selector.count() - 1, display_name)
+        self.model_responses[model_name] = []
+        self._model_accumulators[model_name] = {}
+        
+        # If this is the first model, select it and update response selector
+        if len(self.model_responses) == 1:
+            self.model_selector.setCurrentIndex(0)
+            self.current_model_name = model_name
+            self._update_response_selector()
+            self.response_selector.setCurrentIndex(0)
+        
+    def append_model_token(self, model_name: str, response_id: int, token: str) -> None:
+        """Append a streaming token from a model."""
+        # Ensure the model accumulator exists
+        if model_name not in self._model_accumulators:
+            self._model_accumulators[model_name] = {}
+        
+        # Ensure the response_id accumulator exists
+        if response_id not in self._model_accumulators[model_name]:
+            self._model_accumulators[model_name][response_id] = ""
+            
+            # Auto-switch to this model/response when it starts
+            # Find model index based on ordered list
+            ordered_model_names = [
+                "gpt-oss:20b",
+                "gemma3:12b", 
+                "qwen3:30b",
+                "deepseek-r1:32b",
+                "huihui_ai/mistral-small-abliterated:24b"
+            ]
+            if model_name in ordered_model_names:
+                model_index = ordered_model_names.index(model_name)
+                self.model_selector.setCurrentIndex(model_index)
+                # Convert response_id to local index for this model
+                local_response_id = response_id % 3  # Assuming 3 responses per model
+                self.response_selector.setCurrentIndex(local_response_id)
+            
+        self._model_accumulators[model_name][response_id] += token
+        
+        # Update display if this model/response is selected
+        if (self.current_model_name == model_name and 
+            self.current_response_id == response_id % 3 and 
+            not self._showing_synthesis):
+            self._update_current_display()
+            
+    def append_model_thinking(self, model_name: str, response_id: int, token: str) -> None:
+        """Append thinking token from a model."""
+        # Create thinking accumulators structure if needed
+        if not hasattr(self, '_model_thinking_accumulators'):
+            self._model_thinking_accumulators = {}
+            
+        # Ensure the model thinking accumulator exists
+        if model_name not in self._model_thinking_accumulators:
+            self._model_thinking_accumulators[model_name] = {}
+        
+        # Ensure the response_id thinking accumulator exists
+        if response_id not in self._model_thinking_accumulators[model_name]:
+            self._model_thinking_accumulators[model_name][response_id] = ""
+            
+        self._model_thinking_accumulators[model_name][response_id] += token
+        
+        # Update reasoning display if this model/response is selected and has reasoning
+        if (self.current_model_name == model_name and 
+            self.current_response_id == response_id and 
+            not self._showing_synthesis):
+            # Ensure reasoning controls exist
+            self.ensure_reasoning_controls()
+            self.append_reasoning(token)
+        
+    def finalize_model_response(self, model_name: str, response_id: int, response: ModelResponse) -> None:
+        """Finalize a model response."""
+        if model_name not in self.model_responses:
+            self.model_responses[model_name] = []
+        self.model_responses[model_name].append(response)
+        
+        # Update response selector if this model is selected
+        if self.current_model_name == model_name:
+            self._update_response_selector()
+            
+    def append_synthesis_token(self, token: str) -> None:
+        """Append synthesis token."""
+        self._synthesis_accumulator += token
+        if self._showing_synthesis:
+            self._update_current_display()
+            
+    def finalize_ensemble(self, ensemble_response: EnsembleResponse) -> None:
+        """Finalize the ensemble response."""
+        self.ensemble_response = ensemble_response
+        self._synthesis_accumulator = ensemble_response.final_content
+        if ensemble_response.final_thinking:
+            self._synthesis_thinking_accumulator = ensemble_response.final_thinking
+        
+        # Update progress label with consensus level
+        consensus_pct = int(ensemble_response.consensus_level * 100)
+        self.progress_label.setText(f"Complete • Consensus: {consensus_pct}%")
+        
+        # Auto-select synthesis
+        self.model_selector.setCurrentIndex(self.model_selector.count() - 1)
+        
+    def _on_model_selected(self, index: int) -> None:
+        """Handle model selection change."""
+        if index == self.model_selector.count() - 1:  # Synthesis
+            self._showing_synthesis = True
+            self.current_model_name = None
+            self.response_selector.clear()
+            self.response_selector.setEnabled(False)
+            self._update_current_display()
+        else:
+            self._showing_synthesis = False
+            # Get model name from index
+            model_names = list(self.model_responses.keys())
+            if index < len(model_names):
+                self.current_model_name = model_names[index]
+                self._update_response_selector()
+                self.response_selector.setEnabled(True)
+                
+    def _update_response_selector(self) -> None:
+        """Update response selector for current model."""
+        self.response_selector.clear()
+        if self.current_model_name and self.current_model_name in self._model_accumulators:
+            # Get temperatures for this model
+            model_config = next((m for m in ENSEMBLE_MODELS.values() if m.name == self.current_model_name), None)
+            if model_config:
+                temperatures = model_config.get_temperatures(3)  # Default to 3 responses per model
+                for i, temp in enumerate(temperatures):
+                    self.response_selector.addItem(f"T:{temp:.1f}")
+                
+    def _on_response_selected(self, index: int) -> None:
+        """Handle response selection change."""
+        if index >= 0:
+            self.current_response_id = index
+            self._update_current_display()
+            
+    def _update_current_display(self) -> None:
+        """Update the display based on current selection."""
+        if self._showing_synthesis:
+            content = self._synthesis_accumulator
+        elif self.current_model_name and self.current_model_name in self._model_accumulators:
+            # Find the correct response_id for this model and local response index
+            ordered_model_names = [
+                "gpt-oss:20b",
+                "gemma3:12b", 
+                "qwen3:30b",
+                "deepseek-r1:32b",
+                "huihui_ai/mistral-small-abliterated:24b"
+            ]
+            if self.current_model_name in ordered_model_names:
+                model_index = ordered_model_names.index(self.current_model_name)
+                # Calculate global response_id based on model index and local response id
+                global_response_id = model_index * 3 + self.current_response_id
+                content = self._model_accumulators[self.current_model_name].get(global_response_id, "")
+            else:
+                content = ""
+        else:
+            content = ""
+            
+        # Update the display using base class method
+        if content:
+            self.set_markdown(content)
+        else:
+            self.set_plain_text("")
 
 
 class MultiShotWorker(QtCore.QObject):
@@ -2000,7 +2226,7 @@ class ChatWindow(QtWidgets.QMainWindow):
         self._start_stream_thread(user_text)
     
     def _show_send_context_menu(self, pos: QtCore.QPoint) -> None:
-        """Show context menu for send button with multi-shot option."""
+        """Show context menu for send button with multi-shot and ensemble options."""
         menu = QtWidgets.QMenu(self.send_button)
         
         # Multi-shot action
@@ -2009,6 +2235,13 @@ class ChatWindow(QtWidgets.QMainWindow):
             multi_shot_action.setIcon(qta.icon("mdi.layers-outline"))
         multi_shot_action.triggered.connect(self._on_multi_shot_send)
         menu.addAction(multi_shot_action)
+        
+        # Ensemble action
+        ensemble_action = QtGui.QAction("Ensemble Response (5 Models)", menu)
+        if qta:
+            ensemble_action.setIcon(qta.icon("mdi.account-group"))
+        ensemble_action.triggered.connect(self._on_ensemble_send)
+        menu.addAction(ensemble_action)
         
         # Show menu at cursor position
         menu.exec(self.send_button.mapToGlobal(pos))
@@ -2031,6 +2264,25 @@ class ChatWindow(QtWidgets.QMainWindow):
         self._clear_selected_images()
 
         self._start_multi_shot_stream(user_text)
+    
+    def _on_ensemble_send(self) -> None:
+        """Handle ensemble generation request."""
+        user_text = self.input_edit.toPlainText().strip()
+        if not user_text and not self.selected_images:
+            return
+        # If no text but images exist, add a default prompt
+        if not user_text and self.selected_images:
+            user_text = "What's in this image?"
+        self.input_edit.clear()
+
+        # Display user message immediately with images if any
+        self.session.add_user_message(user_text, self.selected_images)
+        self._append_chat("user", user_text, images=self.selected_images)
+        
+        # Clear selected images after sending
+        self._clear_selected_images()
+
+        self._start_ensemble_stream(user_text)
     
     def _start_stream_thread(self, user_text: str) -> None:
         # Get current model info
@@ -2376,6 +2628,195 @@ class ChatWindow(QtWidgets.QMainWindow):
         if hasattr(self, "_multi_shot_thread"):
             self._multi_shot_thread.quit()
             self._multi_shot_thread.wait()
+    
+    def _start_ensemble_stream(self, user_text: str) -> None:
+        """Start ensemble generation with multiple models."""
+        # Get ensemble configuration
+        ensemble_config = EnsembleConfig.default()
+        
+        # Build base messages for ensemble (without model-specific options)
+        # Each model will get its own options based on its capabilities
+        base_messages = [
+            {"role": "system", "content": ""},  # Will be replaced per model
+            {"role": "user", "content": user_text}
+        ]
+        
+        # Add images if present
+        if self.session.messages and self.session.messages[-1].images:
+            base_messages[-1]["images"] = [img["data"] for img in self.session.messages[-1].images]
+        
+        # Base options (will be customized per model)
+        base_options = {}
+        
+        # Create ensemble message row
+        self._current_ensemble_bubble = EnsembleMessageRow(
+            role="assistant", 
+            title="Ensemble Assistant"
+        )
+        self._current_ensemble_bubble.set_plain_text("")
+        
+        # Add models to UI
+        for model_config in ensemble_config.models:
+            self._current_ensemble_bubble.add_model(model_config.name, model_config.display_name)
+        
+        self._add_row(self._current_ensemble_bubble)
+        
+        # Update UI state for streaming
+        self.send_button.hide()
+        self.stop_button.show()
+        self.input_edit.setEnabled(False)
+        
+        # Create ensemble orchestrator
+        self._ensemble_thread = QtCore.QThread(self)
+        self._ensemble_orchestrator = EnsembleOrchestrator(
+            ensemble_config,
+            base_messages,
+            base_options,
+            self._current_ensemble_bubble.performance_tracker
+        )
+        self._ensemble_orchestrator.moveToThread(self._ensemble_thread)
+        
+        # Connect signals
+        self._ensemble_thread.started.connect(self._ensemble_orchestrator.start)
+        
+        # Model response signals
+        self._ensemble_orchestrator.model_token.connect(self._on_ensemble_model_token)
+        self._ensemble_orchestrator.model_thinking.connect(self._on_ensemble_model_thinking)
+        self._ensemble_orchestrator.model_finished.connect(self._on_ensemble_model_finished)
+        
+        # Synthesis signals
+        self._ensemble_orchestrator.synthesis_token.connect(self._on_ensemble_synthesis_token)
+        self._ensemble_orchestrator.synthesis_finished.connect(self._on_ensemble_synthesis_finished)
+        
+        # Progress and status
+        self._ensemble_orchestrator.progress.connect(self._on_ensemble_progress)
+        self._ensemble_orchestrator.status.connect(self._on_ensemble_status)
+        self._ensemble_orchestrator.error.connect(self._on_ensemble_error)
+        
+        # Cleanup
+        self._ensemble_orchestrator.synthesis_finished.connect(self._on_ensemble_complete)
+        self._ensemble_thread.finished.connect(self._ensemble_thread.deleteLater)
+        
+        # Start ensemble
+        self._ensemble_thread.start()
+    
+    @QtCore.Slot(str, int, str)
+    def _on_ensemble_model_token(self, model_name: str, response_id: int, token: str) -> None:
+        """Handle model token from ensemble."""
+        if hasattr(self, "_current_ensemble_bubble") and self._current_ensemble_bubble:
+            self._current_ensemble_bubble.append_model_token(model_name, response_id, token)
+            self.scroll_to_bottom_if_needed()
+    
+    @QtCore.Slot(str, int, str)
+    def _on_ensemble_model_thinking(self, model_name: str, response_id: int, token: str) -> None:
+        """Handle model thinking from ensemble."""
+        if hasattr(self, "_current_ensemble_bubble") and self._current_ensemble_bubble:
+            self._current_ensemble_bubble.append_model_thinking(model_name, response_id, token)
+    
+    @QtCore.Slot(str, int, ModelResponse)
+    def _on_ensemble_model_finished(self, model_name: str, response_id: int, response: ModelResponse) -> None:
+        """Handle completed model response."""
+        if hasattr(self, "_current_ensemble_bubble") and self._current_ensemble_bubble:
+            self._current_ensemble_bubble.finalize_model_response(model_name, response_id, response)
+    
+    @QtCore.Slot(str)
+    def _on_ensemble_synthesis_token(self, token: str) -> None:
+        """Handle synthesis token."""
+        if hasattr(self, "_current_ensemble_bubble") and self._current_ensemble_bubble:
+            # Auto-switch to synthesis when it starts
+            if not self._current_ensemble_bubble._synthesis_accumulator:
+                self._current_ensemble_bubble.model_selector.setCurrentIndex(
+                    self._current_ensemble_bubble.model_selector.count() - 1
+                )
+            self._current_ensemble_bubble.append_synthesis_token(token)
+            self.scroll_to_bottom_if_needed()
+    
+    @QtCore.Slot(EnsembleResponse)
+    def _on_ensemble_synthesis_finished(self, ensemble_response: EnsembleResponse) -> None:
+        """Handle completed ensemble synthesis."""
+        if hasattr(self, "_current_ensemble_bubble") and self._current_ensemble_bubble:
+            self._current_ensemble_bubble.finalize_ensemble(ensemble_response)
+            
+            # Save to session history
+            self.session.messages.append(ChatMessage(
+                role="assistant",
+                content=ensemble_response.final_content,
+                thinking=ensemble_response.final_thinking,
+                multi_shot={
+                    "ensemble": True,
+                    "models": [r.model_name for r in ensemble_response.model_responses],
+                    "consensus_level": ensemble_response.consensus_level,
+                    "confidence_scores": ensemble_response.confidence_scores,
+                    "diversity_metrics": ensemble_response.diversity_metrics
+                }
+            ))
+            
+            # Auto-save after ensemble completes
+            if self.current_chat_id:
+                self.chat_persistence.save_chat(self.current_chat_id, self.session)
+    
+    @QtCore.Slot(int, int)
+    def _on_ensemble_progress(self, completed: int, total: int) -> None:
+        """Handle ensemble progress updates."""
+        if hasattr(self, "_current_ensemble_bubble") and self._current_ensemble_bubble:
+            percentage = int((completed / total) * 100) if total > 0 else 0
+            
+            # Determine current model being processed
+            if completed < total:
+                ordered_model_names = [
+                    "gpt-oss:20b",
+                    "gemma3:12b", 
+                    "qwen3:30b",
+                    "deepseek-r1:32b",
+                    "huihui_ai/mistral-small-abliterated:24b"
+                ]
+                current_model_idx = completed // 3
+                if current_model_idx < len(ordered_model_names):
+                    from model_configs import ENSEMBLE_MODELS
+                    model_name = ordered_model_names[current_model_idx]
+                    model_display = ENSEMBLE_MODELS[model_name].display_name.split(' (')[0]  # Get short name
+                    local_response = completed % 3 + 1
+                    self._current_ensemble_bubble.progress_label.setText(
+                        f"Processing: {model_display} ({local_response}/3) • Total: {completed}/{total} ({percentage}%)"
+                    )
+                else:
+                    self._current_ensemble_bubble.progress_label.setText(f"Responses: {completed}/{total} ({percentage}%)")
+            else:
+                self._current_ensemble_bubble.progress_label.setText(f"Synthesizing... ({percentage}%)")
+    
+    @QtCore.Slot(str)
+    def _on_ensemble_status(self, status: str) -> None:
+        """Handle ensemble status updates."""
+        if hasattr(self, "_current_ensemble_bubble") and self._current_ensemble_bubble:
+            self._current_ensemble_bubble.progress_label.setText(status)
+    
+    @QtCore.Slot(str)
+    def _on_ensemble_error(self, error_msg: str) -> None:
+        """Handle ensemble errors."""
+        if hasattr(self, "_current_ensemble_bubble") and self._current_ensemble_bubble:
+            self._current_ensemble_bubble.progress_label.setText(f"Error: {error_msg}")
+        
+        # Clean up and re-enable UI
+        self._on_ensemble_complete()
+        
+        # Show error dialog
+        QtWidgets.QMessageBox.critical(self, "Ensemble Error", f"Ensemble generation failed: {error_msg}")
+    
+    @QtCore.Slot()
+    def _on_ensemble_complete(self) -> None:
+        """Handle ensemble completion."""
+        # Stop and clean up orchestrator
+        if hasattr(self, "_ensemble_orchestrator"):
+            self._ensemble_orchestrator.stop()
+            
+        if hasattr(self, "_ensemble_thread") and self._ensemble_thread.isRunning():
+            self._ensemble_thread.quit()
+            self._ensemble_thread.wait(1000)
+            
+        # Re-enable UI
+        self.send_button.show()
+        self.stop_button.hide()
+        self.input_edit.setEnabled(True)
 
     # --- Message helpers ---
     def _add_row(self, row: 'MessageRow') -> None:
