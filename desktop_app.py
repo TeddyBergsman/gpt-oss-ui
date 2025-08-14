@@ -780,12 +780,12 @@ class MultiShotMessageRow(MessageRow):
             self.current_response_id = index
             # Show selected response
             self._update_current_display()
-            # Show thinking if any
+            # Show thinking if any (render as preformatted monospace)
             thinking = self._thinking_accumulators.get(index, "")
             if thinking:
                 self.ensure_reasoning_controls()
                 self.reasoning_view.setHtml(
-                    self._wrap_html(self._render_markdown(thinking))
+                    self._wrap_html(f"<pre style='white-space:pre-wrap'>{html.escape(thinking)}</pre>")
                 )
 
 
@@ -884,6 +884,9 @@ class MultiShotResponse:
     content: str
     thinking: str | None
     temperature: float
+    reasoning_time: float | None = None
+    response_time: float | None = None
+    token_count: int | None = None
     thread: Optional[QtCore.QThread] = None
     worker: Optional[StreamWorker] = None
 
@@ -1103,7 +1106,7 @@ class MultiShotWorker(QtCore.QObject):
         # Stream tokens in real-time
         worker.token.connect(lambda token, id=response_id: self._on_response_token(id, token))
         worker.thinking.connect(lambda token, id=response_id: self._on_response_thinking(id, token))
-        worker.finished.connect(lambda c, t, _, __, ___, id=response_id: self._on_response_finished(id, c, t))
+        worker.finished.connect(lambda c, t, rt, resp_t, tok, id=response_id: self._on_response_finished(id, c, t, rt, resp_t, tok))
         worker.error.connect(self._on_worker_error)
         worker.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
@@ -1150,7 +1153,7 @@ class MultiShotWorker(QtCore.QObject):
         self.responses[response_id].thinking += token
         self.response_thinking.emit(response_id, token)
     
-    def _on_response_finished(self, response_id: int, content: str, thinking: str) -> None:
+    def _on_response_finished(self, response_id: int, content: str, thinking: str, reasoning_time: float, response_time: float, token_count: int) -> None:
         """Handle completion of a single response."""
         if self._stop_requested:
             return
@@ -1165,6 +1168,9 @@ class MultiShotWorker(QtCore.QObject):
         response = self.responses[response_id]
         response.content = content
         response.thinking = thinking if thinking else None
+        response.reasoning_time = reasoning_time
+        response.response_time = response_time
+        response.token_count = token_count
         
         self.completed_count += 1
         self.progress_update.emit(self.completed_count, self.response_count)
@@ -2841,9 +2847,35 @@ class ChatWindow(QtWidgets.QMainWindow):
             return
         if hasattr(self, "_current_multi_shot_bubble") and self._current_multi_shot_bubble:
             self._current_multi_shot_bubble.finalize_response(response_id, content, thinking, temperature)
+            # Add per-response stats if captured by worker
+            try:
+                resp = self._multi_shot_worker.responses[response_id]
+                if (resp.reasoning_time is not None and resp.response_time is not None and resp.token_count is not None and resp.response_time > 0):
+                    tokens_per_sec = resp.token_count / resp.response_time if resp.response_time > 0 else 0
+                    stats = f"{resp.reasoning_time:.1f}s (reasoning) · {resp.response_time:.1f}s (responding) · {tokens_per_sec:.1f} tokens/s"
+                    # Temporarily switch to the just-finished response to append stats, then switch back
+                    prev_index = self._current_multi_shot_bubble.response_selector.currentIndex()
+                    self._current_multi_shot_bubble.response_selector.setCurrentIndex(response_id)
+                    self._current_multi_shot_bubble.append_stats(stats)
+                    self._current_multi_shot_bubble.response_selector.setCurrentIndex(prev_index)
+            except Exception:
+                pass
             
-            # Auto-switch to next response is disabled during apology retry for stability
-            # We keep the current selection to avoid UI jumping and reasoning mixing
+            # If not in an apology-triggered retry state, auto-switch to the next unfinished response
+            if not getattr(self, "_ms_apology_triggered", False):
+                try:
+                    # Find the smallest response id greater than current that is not yet completed
+                    next_id = None
+                    for i in range(response_id + 1, self._current_multi_shot_bubble.response_count):
+                        # Consider it unfinished if accumulator is empty and no finalized content recorded
+                        acc = self._current_multi_shot_bubble._response_accumulators.get(i, "")
+                        if not acc:
+                            next_id = i
+                            break
+                    if next_id is not None:
+                        self._current_multi_shot_bubble.response_selector.setCurrentIndex(next_id)
+                except Exception:
+                    pass
     
     @QtCore.Slot(str)
     def _on_synthesis_token(self, token: str) -> None:
@@ -2884,11 +2916,19 @@ class ChatWindow(QtWidgets.QMainWindow):
             
             # Collect all responses
             for i in range(self._current_multi_shot_bubble.response_count):
+                resp = None
+                try:
+                    resp = self._multi_shot_worker.responses[i]
+                except Exception:
+                    pass
                 response_data = {
                     "id": i,
                     "content": self._current_multi_shot_bubble._response_accumulators[i],
                     "thinking": self._current_multi_shot_bubble._thinking_accumulators.get(i, "") or None,
-                    "temperature": self._current_multi_shot_bubble._calculate_temperature(i)
+                    "temperature": self._current_multi_shot_bubble._calculate_temperature(i),
+                    "reasoning_time": getattr(resp, "reasoning_time", None),
+                    "response_time": getattr(resp, "response_time", None),
+                    "token_count": getattr(resp, "token_count", None),
                 }
                 multi_shot_data["responses"].append(response_data)
             
