@@ -1439,6 +1439,15 @@ class ChatWindow(QtWidgets.QMainWindow):
         self.selected_images: List[Dict[str, str]] = []  # List of {"data": base64_str, "type": mime_type, "path": file_path}
         self.multi_shot_count = 10  # Default number of parallel responses for multi-shot
         self.temperature = config.AVAILABLE_MODELS[0]["default_temperature"]  # Default temperature from selected model
+        # Apology retry state
+        self.apology_retry_max = 10  # Default to 10 retries; 0=off
+        self._apology_retry_active = False
+        self._apology_retry_attempts = 0
+        self._apology_retry_original_text = ""
+        self._apology_retry_images = []
+        self._ignore_current_finished = False
+        self._current_streamed_text = ""
+        self._apology_prefix_checked = False
 
         self.session = ChatSession(
             base_system_prompt=SYSTEM_PROMPTS[self.selected_prompt_index]["prompt"],
@@ -1609,6 +1618,29 @@ class ChatWindow(QtWidgets.QMainWindow):
         self._configure_combo(self.reasoning_combo)
         self.reasoning_label = QtWidgets.QLabel("Reasoning Effort")
         form.addRow(self.reasoning_label, self.reasoning_combo)
+
+        # Apology Retry slider (above Multi-Shot Count)
+        apology_slider_container = QtWidgets.QWidget()
+        apology_slider_layout = QtWidgets.QHBoxLayout(apology_slider_container)
+        apology_slider_layout.setContentsMargins(0, 0, 0, 0)
+        apology_slider_layout.setSpacing(8)
+
+        self.apology_retry_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.apology_retry_slider.setRange(0, 10)  # 0 to 10 retries
+        self.apology_retry_slider.setValue(self.apology_retry_max)
+        self.apology_retry_slider.setMinimumHeight(32)
+        self.apology_retry_slider.setTickPosition(QtWidgets.QSlider.TicksBelow)
+        self.apology_retry_slider.setTickInterval(1)
+
+        self.apology_retry_value_label = QtWidgets.QLabel(str(self.apology_retry_max))
+        self.apology_retry_value_label.setMinimumWidth(25)
+        self.apology_retry_value_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+
+        apology_slider_layout.addWidget(self.apology_retry_slider)
+        apology_slider_layout.addWidget(self.apology_retry_value_label)
+
+        self.apology_retry_slider.valueChanged.connect(self._on_apology_retry_changed)
+        form.addRow("Apology Retry", apology_slider_container)
 
         # Multi-shot count slider
         slider_container = QtWidgets.QWidget()
@@ -1945,6 +1977,12 @@ class ChatWindow(QtWidgets.QMainWindow):
         self.multi_shot_value_label.setText(str(value))
         self._update_preset_selection_based_on_current_settings()
 
+    def _on_apology_retry_changed(self, value: int) -> None:
+        """Handle apology retry slider value changes."""
+        self.apology_retry_max = int(value)
+        self.apology_retry_value_label.setText(str(self.apology_retry_max))
+        self._update_preset_selection_based_on_current_settings()
+
     def _on_temperature_changed(self, value: int) -> None:
         """Handle temperature slider value changes."""
         self.temperature = value / 10.0  # Convert slider value to float
@@ -1966,6 +2004,7 @@ class ChatWindow(QtWidgets.QMainWindow):
             "temperature": float(self.temperature),
             "multi_shot_count": int(self.multi_shot_count),
             "compliance_enabled": bool(self.add_special_message),
+            "apology_retry_max": int(self.apology_retry_max),
         }
 
     def _apply_preset(self, preset: dict) -> None:
@@ -1974,8 +2013,9 @@ class ChatWindow(QtWidgets.QMainWindow):
         prompt_name = preset.get("system_prompt_name", SYSTEM_PROMPTS[0]["name"])
         reasoning_effort = preset.get("reasoning_effort", "None")
         temperature = float(preset.get("temperature", config.AVAILABLE_MODELS[0]["default_temperature"]))
-        multi_shot_count = int(preset.get("multi_shot_count", 10))
-        compliance_enabled = bool(preset.get("compliance_enabled", False))
+        multi_shot_count = int(preset.get("multi_shot_count", self.multi_shot_count))
+        compliance_enabled = bool(preset.get("compliance_enabled", self.add_special_message))
+        apology_retry_max = int(preset.get("apology_retry_max", self.apology_retry_max))
 
         model_index = next((i for i, m in enumerate(config.AVAILABLE_MODELS) if m["name"] == model_name), 0)
         prompt_index = next((i for i, p in enumerate(SYSTEM_PROMPTS) if p["name"] == prompt_name), 0)
@@ -2003,6 +2043,7 @@ class ChatWindow(QtWidgets.QMainWindow):
         self.temperature = temperature
         self.multi_shot_count = multi_shot_count
         self.add_special_message = compliance_enabled
+        self.apology_retry_max = apology_retry_max
 
         # Recreate session for new combination
         self.current_chat_id = None
@@ -2021,6 +2062,9 @@ class ChatWindow(QtWidgets.QMainWindow):
         self.temperature_value_label.setText(f"{self.temperature:.1f}")
         self.multi_shot_slider.setValue(self.multi_shot_count)
         self.multi_shot_value_label.setText(str(self.multi_shot_count))
+        if hasattr(self, 'apology_retry_slider'):
+            self.apology_retry_slider.setValue(self.apology_retry_max)
+            self.apology_retry_value_label.setText(str(self.apology_retry_max))
         self.compliance_checkbox.setChecked(self.add_special_message)
 
         for w in widgets:
@@ -2306,6 +2350,25 @@ class ChatWindow(QtWidgets.QMainWindow):
         self.session.add_user_message(user_text, self.selected_images)
         self._append_chat("user", user_text, images=self.selected_images)
         
+        # Initialize apology retry state for this turn
+        if self.apology_retry_max > 0:
+            try:
+                from copy import deepcopy as _deepcopy
+                self._apology_retry_active = True
+                self._apology_retry_attempts = 0
+                self._apology_retry_original_text = user_text
+                self._apology_retry_images = _deepcopy(self.selected_images) if self.selected_images else []
+            except Exception:
+                self._apology_retry_active = True
+                self._apology_retry_attempts = 0
+                self._apology_retry_original_text = user_text
+                self._apology_retry_images = []
+        else:
+            self._apology_retry_active = False
+            self._apology_retry_attempts = 0
+            self._apology_retry_original_text = ""
+            self._apology_retry_images = []
+
         # Clear selected images after sending
         self._clear_selected_images()
 
@@ -2380,6 +2443,11 @@ class ChatWindow(QtWidgets.QMainWindow):
         self.stop_button.show()
         self.input_edit.setEnabled(False)
 
+        # Reset streaming state for apology detection
+        self._current_streamed_text = ""
+        self._apology_prefix_checked = False
+        self._ignore_current_finished = False
+
         self._stream_thread = QtCore.QThread(self)  # keep reference
         self._worker = StreamWorker(self.session.model_name, model_messages, model_options)
         self._worker.moveToThread(self._stream_thread)
@@ -2396,6 +2464,16 @@ class ChatWindow(QtWidgets.QMainWindow):
     @QtCore.Slot(str)
     def _on_token(self, text: str) -> None:
         if hasattr(self, "_current_assistant_bubble") and self._current_assistant_bubble:
+            # Detect early apology and trigger retry
+            if self._apology_retry_active and self.apology_retry_max > 0 and self._apology_retry_attempts < self.apology_retry_max and not self._apology_prefix_checked:
+                self._current_streamed_text += text
+                prefix = self._current_streamed_text.lstrip()
+                # Detect variants like "I'm sorry", "I’m sorry", optionally followed by comma/period and spaces
+                # Case-insensitive
+                if re.match(r"^(i['’]m\s+sorry)[\s,\.:;!?-]*", prefix, re.IGNORECASE):
+                    self._apology_prefix_checked = True
+                    self._trigger_apology_retry()
+                    return
             self._current_assistant_bubble.append_stream_text(text)
             self.scroll_to_bottom_if_needed()
 
@@ -2430,6 +2508,13 @@ class ChatWindow(QtWidgets.QMainWindow):
 
     @QtCore.Slot(str, str, float, float, int)
     def _on_finished(self, content: str, thinking: str, reasoning_time: float, response_time: float, token_count: int) -> None:
+        # Ignore finish if we aborted due to apology retry
+        if self._ignore_current_finished:
+            if hasattr(self, "_stream_thread"):
+                self._stream_thread.quit()
+                self._stream_thread.wait()
+            return
+
         if hasattr(self, "_current_assistant_bubble") and self._current_assistant_bubble:
             # Check if M2M formatting should be applied
             is_m2m = (self.selected_prompt_index < len(SYSTEM_PROMPTS) and 
@@ -2469,6 +2554,12 @@ class ChatWindow(QtWidgets.QMainWindow):
         # Auto-save the chat after each message exchange
         self._save_current_chat()
         self._refresh_chat_history()
+
+        # Reset apology retry state after a normal finish
+        self._apology_retry_active = False
+        self._apology_retry_attempts = 0
+        self._apology_retry_original_text = ""
+        self._apology_retry_images = []
     
     def _on_stop_generation(self) -> None:
         """Stop the current generation."""
@@ -2478,6 +2569,83 @@ class ChatWindow(QtWidgets.QMainWindow):
         elif hasattr(self, "_multi_shot_worker") and self._multi_shot_worker:
             self._multi_shot_worker.request_stop()
             self.stop_button.setEnabled(False)
+        # Cancel any in-progress apology retry for this turn
+        self._apology_retry_active = False
+        self._apology_retry_attempts = 0
+        self._apology_retry_original_text = ""
+        self._apology_retry_images = []
+
+    def _clear_chat_without_saving(self) -> None:
+        """Clear the current chat/session and UI without persisting a partial turn."""
+        self.current_chat_id = None
+        self.session.reset_messages()
+        self._render_history()
+        self._refresh_chat_history()
+
+    def _trigger_apology_retry(self) -> None:
+        """Abort current stream due to apology prefix and retry by clearing chat and resending."""
+        # Guard: only if we still have retries left
+        if not (self._apology_retry_active and self._apology_retry_attempts < self.apology_retry_max):
+            return
+        self._apology_retry_attempts += 1
+
+        # Try to preserve images from last user message
+        try:
+            from copy import deepcopy as _deepcopy
+            last_images = []
+            if self.session.messages and self.session.messages[-1].role == "user":
+                last_images = _deepcopy(self.session.messages[-1].images or [])
+            if last_images:
+                self._apology_retry_images = last_images
+        except Exception:
+            pass
+
+        # Stop current worker and ignore its finished event
+        self._ignore_current_finished = True
+        if hasattr(self, "_worker") and self._worker:
+            try:
+                self._worker.request_stop()
+            except Exception:
+                pass
+        # Ensure the old stream thread fully stops before resending
+        if hasattr(self, "_stream_thread") and self._stream_thread:
+            try:
+                self._stream_thread.quit()
+                self._stream_thread.wait()
+            except Exception:
+                pass
+
+        # Remove the current assistant bubble if present
+        if hasattr(self, "_current_assistant_bubble") and self._current_assistant_bubble:
+            try:
+                self._current_assistant_bubble.deleteLater()
+            except Exception:
+                pass
+            self._current_assistant_bubble = None
+
+        # Clear chat without saving
+        self._clear_chat_without_saving()
+
+        # If we've exhausted retries, stop retrying for this turn
+        if self._apology_retry_attempts >= self.apology_retry_max:
+            self._apology_retry_active = False
+
+        # Resend original user message and restart stream
+        original_text = self._apology_retry_original_text or ""
+        images = self._apology_retry_images or []
+
+        # Reset streaming detection state for the next attempt
+        self._apology_prefix_checked = False
+        self._current_streamed_text = ""
+
+        def _do_resend() -> None:
+            # Display user message again
+            self.session.add_user_message(original_text, images)
+            self._append_chat("user", original_text, images=images if images else None)
+            # Start streaming again
+            self._start_stream_thread(original_text)
+
+        QtCore.QTimer.singleShot(0, _do_resend)
 
     def _start_multi_shot_stream(self, user_text: str) -> None:
         """Start multi-shot generation with temperature variation."""
@@ -2757,7 +2925,8 @@ class ChatWindow(QtWidgets.QMainWindow):
             "selected_reasoning_index": self.selected_reasoning_index,
             "selected_model_index": self.selected_model_index,
             "temperature": self.temperature,
-            "multi_shot_count": self.multi_shot_count
+            "multi_shot_count": self.multi_shot_count,
+            "apology_retry_max": self.apology_retry_max
         }
         
         if self.current_chat_id:
@@ -2884,6 +3053,8 @@ class ChatWindow(QtWidgets.QMainWindow):
             # Block signals for sliders
             self.temperature_slider.blockSignals(True)
             self.multi_shot_slider.blockSignals(True)
+            if hasattr(self, 'apology_retry_slider'):
+                self.apology_retry_slider.blockSignals(True)
             
             # Restore temperature and multi-shot count
             saved_temp = metadata.get("temperature")
@@ -2899,6 +3070,11 @@ class ChatWindow(QtWidgets.QMainWindow):
                 self.multi_shot_count = saved_multi_shot
                 self.multi_shot_slider.setValue(self.multi_shot_count)
                 self.multi_shot_value_label.setText(str(self.multi_shot_count))
+            saved_apology_retry = metadata.get("apology_retry_max")
+            if saved_apology_retry is not None and hasattr(self, 'apology_retry_slider'):
+                self.apology_retry_max = int(saved_apology_retry)
+                self.apology_retry_slider.setValue(self.apology_retry_max)
+                self.apology_retry_value_label.setText(str(self.apology_retry_max))
             
         finally:
             # Re-enable all signals
@@ -2907,6 +3083,8 @@ class ChatWindow(QtWidgets.QMainWindow):
             self.reasoning_combo.blockSignals(False)
             self.temperature_slider.blockSignals(False)
             self.multi_shot_slider.blockSignals(False)
+            if hasattr(self, 'apology_retry_slider'):
+                self.apology_retry_slider.blockSignals(False)
         
         # Render the loaded chat
         self._render_history()
