@@ -56,6 +56,14 @@ AVAILABLE_MODELS = [
         "context_window": 32000,  # 32K tokens
     },
     {
+        "name": "gemma3:270m",
+        "display_name": "Gemma3 270M",
+        "supports_reasoning": False,
+        "supports_compliance": False,
+        "supports_images": True,
+        "context_window": 32000,  # 32K tokens
+    },
+    {
         "name": "qwen3:30b",
         "display_name": "Qwen3 30B",
         "supports_reasoning": True,  # Has thinking/non-thinking modes

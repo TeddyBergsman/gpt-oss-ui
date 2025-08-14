@@ -1423,7 +1423,7 @@ class ChatWindow(QtWidgets.QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("GPT-OSS Desktop")
-        self.resize(1000, 760)
+        self.resize(1200, 760)  # Increased width from 1000 to 1200
         try:
             self.setWindowIcon(QtGui.QIcon("assets/openai.png"))
         except Exception:
