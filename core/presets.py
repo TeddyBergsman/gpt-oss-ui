@@ -71,6 +71,18 @@ class PresetManager:
             data["last_selected"] = presets[0]["name"] if presets else None
         self._write_json(data)
 
+    def rename_preset(self, old_name: str, new_name: str) -> None:
+        data = self._read_json()
+        presets = data.get("presets", [])
+        for p in presets:
+            if p.get("name") == old_name:
+                p["name"] = new_name
+                break
+        data["presets"] = presets
+        if data.get("last_selected") == old_name:
+            data["last_selected"] = new_name
+        self._write_json(data)
+
     def get_last_selected(self) -> Optional[str]:
         return self._read_json().get("last_selected")
 

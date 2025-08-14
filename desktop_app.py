@@ -1525,10 +1525,33 @@ class ChatWindow(QtWidgets.QMainWindow):
         self._configure_combo(self.preset_combo)
         self.preset_combo.currentIndexChanged.connect(self._on_preset_selected)
         preset_row.addWidget(self.preset_combo, 1)
+        # Save button
         self.save_preset_btn = QtWidgets.QToolButton()
-        self.save_preset_btn.setText("Save")
+        if qta:
+            self.save_preset_btn.setIcon(qta.icon("mdi.content-save"))
+        else:
+            self.save_preset_btn.setText("💾")
+        self.save_preset_btn.setToolTip("Save preset")
         self.save_preset_btn.clicked.connect(self._on_save_preset)
         preset_row.addWidget(self.save_preset_btn)
+        # Rename button
+        self.rename_preset_btn = QtWidgets.QToolButton()
+        if qta:
+            self.rename_preset_btn.setIcon(qta.icon("mdi.rename-box"))
+        else:
+            self.rename_preset_btn.setText("✏️")
+        self.rename_preset_btn.setToolTip("Rename preset")
+        self.rename_preset_btn.clicked.connect(self._on_rename_preset)
+        preset_row.addWidget(self.rename_preset_btn)
+        # Delete button
+        self.delete_preset_btn = QtWidgets.QToolButton()
+        if qta:
+            self.delete_preset_btn.setIcon(qta.icon("mdi.delete-outline"))
+        else:
+            self.delete_preset_btn.setText("🗑")
+        self.delete_preset_btn.setToolTip("Delete preset")
+        self.delete_preset_btn.clicked.connect(self._on_delete_preset)
+        preset_row.addWidget(self.delete_preset_btn)
         card_layout.addLayout(preset_row)
 
         # Model picker and other settings
@@ -2050,6 +2073,54 @@ class ChatWindow(QtWidgets.QMainWindow):
         self.preset_manager.upsert_preset(data)
         self.preset_manager.set_last_selected(name)
         # Reload into UI and select the saved preset
+        self._reload_presets_into_ui()
+
+    def _on_delete_preset(self) -> None:
+        name = self.preset_combo.currentText().strip()
+        if not name:
+            return
+        # Do not allow deleting the last preset; require at least one to exist
+        presets = self.preset_manager.list_presets()
+        if len(presets) <= 1:
+            QtWidgets.QMessageBox.information(self, "Presets", "At least one preset must exist.")
+            return
+        # Confirm
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            "Delete Preset",
+            f"Delete preset '{name}'?",
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+        )
+        if reply != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+        self.preset_manager.delete_preset(name)
+        self._reload_presets_into_ui()
+
+    def _on_rename_preset(self) -> None:
+        from PySide6.QtWidgets import QInputDialog
+        old_name = self.preset_combo.currentText().strip()
+        if not old_name:
+            return
+        new_name, ok = QInputDialog.getText(self, "Rename Preset", "New name:", text=old_name)
+        if not ok:
+            return
+        new_name = new_name.strip()
+        if not new_name or new_name == old_name:
+            return
+        # If the name already exists, confirm overwrite/merge
+        existing = self.preset_manager.get_preset_by_name(new_name)
+        if existing:
+            reply = QtWidgets.QMessageBox.question(
+                self,
+                "Rename Preset",
+                f"A preset named '{new_name}' already exists. Overwrite it?",
+                QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+            )
+            if reply != QtWidgets.QMessageBox.StandardButton.Yes:
+                return
+            # Delete the existing one and rename current
+            self.preset_manager.delete_preset(new_name)
+        self.preset_manager.rename_preset(old_name, new_name)
         self._reload_presets_into_ui()
 
     def _update_ui_for_model(self, model_index: int) -> None:
