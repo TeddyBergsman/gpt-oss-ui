@@ -1564,14 +1564,28 @@ class ChatWindow(QtWidgets.QMainWindow):
         self.reasoning_label = QtWidgets.QLabel("Reasoning Effort")
         form.addRow(self.reasoning_label, self.reasoning_combo)
 
-        # Multi-shot count spinbox
-        self.multi_shot_spinbox = QtWidgets.QSpinBox()
-        self.multi_shot_spinbox.setRange(2, 20)  # Min 2, max 20 responses
-        self.multi_shot_spinbox.setValue(self.multi_shot_count)
-        self.multi_shot_spinbox.setSuffix(" responses")
-        self.multi_shot_spinbox.setMinimumHeight(32)
-        self.multi_shot_spinbox.valueChanged.connect(self._on_multi_shot_count_changed)
-        form.addRow("Multi-Shot Count", self.multi_shot_spinbox)
+        # Multi-shot count slider
+        slider_container = QtWidgets.QWidget()
+        slider_layout = QtWidgets.QHBoxLayout(slider_container)
+        slider_layout.setContentsMargins(0, 0, 0, 0)
+        slider_layout.setSpacing(8)  # Reduce spacing between widgets
+        
+        self.multi_shot_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.multi_shot_slider.setRange(2, 20)  # Min 2, max 20 responses
+        self.multi_shot_slider.setValue(self.multi_shot_count)
+        self.multi_shot_slider.setMinimumHeight(32)
+        self.multi_shot_slider.setTickPosition(QtWidgets.QSlider.TicksBelow)
+        self.multi_shot_slider.setTickInterval(2)
+        
+        self.multi_shot_value_label = QtWidgets.QLabel(str(self.multi_shot_count))
+        self.multi_shot_value_label.setMinimumWidth(25)  # Reduced from 80 to 25
+        self.multi_shot_value_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        
+        slider_layout.addWidget(self.multi_shot_slider)
+        slider_layout.addWidget(self.multi_shot_value_label)
+        
+        self.multi_shot_slider.valueChanged.connect(self._on_multi_shot_count_changed)
+        form.addRow("Multi-Shot Count", slider_container)
 
         card_layout.addLayout(form)
         sidebar_layout.addWidget(card)
@@ -1853,6 +1867,7 @@ class ChatWindow(QtWidgets.QMainWindow):
 
     def _on_multi_shot_count_changed(self, value: int) -> None:
         self.multi_shot_count = value
+        self.multi_shot_value_label.setText(str(value))
 
     def _update_ui_for_model(self, model_index: int) -> None:
         """Update UI elements based on model capabilities."""
