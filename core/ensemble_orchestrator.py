@@ -58,6 +58,9 @@ class EnsembleResponse:
     total_time: float
     query_category: Optional[str] = None
     consensus_level: float = 0.0
+    synthesis_token_count: int = 0
+    synthesis_reasoning_time: float = 0.0
+    synthesis_response_time: float = 0.0
 
 
 @dataclass 
@@ -532,7 +535,10 @@ class EnsembleOrchestrator(QtCore.QObject):
             aggregation_method="enhanced_bayesian_synthesis",
             total_time=time.time() - self._start_time,
             query_category=query_category,
-            consensus_level=synthesis_result.consensus_level
+            consensus_level=synthesis_result.consensus_level,
+            synthesis_token_count=synthesis_result.token_count,
+            synthesis_reasoning_time=synthesis_result.reasoning_time,
+            synthesis_response_time=synthesis_result.response_time
         )
         
         # Update performance metrics

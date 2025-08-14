@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 import numpy as np
 from dataclasses import dataclass
+import time
 from typing import List, Dict, Optional, Tuple, Set
 from collections import Counter
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -36,6 +37,9 @@ class SynthesisResult:
     conflicts: List[Dict[str, str]]
     uncertainty_areas: List[str]
     dominant_perspective: Optional[str]
+    token_count: int = 0
+    reasoning_time: float = 0.0
+    response_time: float = 0.0
 
 
 class EnsembleSynthesizer(QtCore.QObject):
@@ -324,6 +328,9 @@ Format: Provide a clear, comprehensive answer that represents the best collectiv
         try:
             content_accumulator = ""
             thinking_accumulator = ""
+            token_counter = 0
+            start_ts = time.time()
+            response_start_ts: Optional[float] = None
             
             # Run synthesis model
             stream = ollama.chat(
@@ -342,7 +349,10 @@ Format: Provide a clear, comprehensive answer that represents the best collectiv
                     
                     if "content" in message and message["content"]:
                         token = message["content"]
+                        if response_start_ts is None:
+                            response_start_ts = time.time()
                         content_accumulator += token
+                        token_counter += 1
                         self.token.emit(token)
                     
                     thinking_content = message.get("thinking_content", message.get("reasoning_content"))
@@ -357,6 +367,13 @@ Format: Provide a clear, comprehensive answer that represents the best collectiv
             key_insights = analysis.get("consensus_topics", [])[:5]
             
             # Build synthesis result
+            end_ts = time.time()
+            if response_start_ts is None:
+                reasoning_time = end_ts - start_ts
+                response_time = 0.0
+            else:
+                reasoning_time = response_start_ts - start_ts
+                response_time = max(0.0, end_ts - response_start_ts)
             result = SynthesisResult(
                 content=content_accumulator,
                 thinking=thinking_accumulator if thinking_accumulator else None,
@@ -364,7 +381,10 @@ Format: Provide a clear, comprehensive answer that represents the best collectiv
                 key_insights=key_insights,
                 conflicts=analysis.get("conflicts", []),
                 uncertainty_areas=analysis.get("uncertainty_areas", []),
-                dominant_perspective=self._identify_dominant_perspective(analysis)
+                dominant_perspective=self._identify_dominant_perspective(analysis),
+                token_count=token_counter,
+                reasoning_time=reasoning_time,
+                response_time=response_time
             )
             
             self.finished.emit(result)

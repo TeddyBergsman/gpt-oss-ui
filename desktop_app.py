@@ -253,13 +253,12 @@ class MessageRow(QtWidgets.QWidget):
     def set_markdown(self, content: str, apply_m2m_formatting: bool = False) -> None:
         self._plain_accumulator = content
         
-        # Apply M2M formatting if requested
-        if apply_m2m_formatting and is_m2m_format(content):
+        # Apply M2M formatting if requested (be permissive: attempt parse regardless of strict format)
+        if apply_m2m_formatting:
             # Debug output for M2M
             print("\n=== M2M Raw Output (Final) ===")
             print(content)
             print("=== End M2M Raw Output ===")
-            
             parsed_data = parse_m2m_output(content)
             if parsed_data:
                 debug_print_parsed_data(parsed_data)
@@ -536,6 +535,7 @@ class MultiShotMessageRow(MessageRow):
         self._thinking_accumulators: Dict[int, str] = {}  # For streaming thinking
         self._synthesis_accumulator = ""
         self._synthesis_thinking_accumulator = ""
+        self._response_metrics: Dict[int, Dict[str, float]] = {}  # reasoning_time/response_time/token_count per response
         
         # Initialize accumulators
         for i in range(response_count):
@@ -746,8 +746,8 @@ class MultiShotMessageRow(MessageRow):
         else:
             content = self._response_accumulators.get(self.current_response_id, "")
         
-        # Apply M2M formatting if enabled
-        if self._apply_m2m_formatting and is_m2m_format(content):
+        # Apply M2M formatting if enabled (attempt parse regardless of strict format)
+        if self._apply_m2m_formatting:
             parsed_data = parse_m2m_output(content)
             if parsed_data:
                 formatted_content = format_m2m_to_markdown(parsed_data)
@@ -779,6 +779,7 @@ class MultiShotMessageRow(MessageRow):
                 self.reasoning_view.setHtml(
                     self._wrap_html(self._render_markdown(self._synthesis_thinking_accumulator))
                 )
+            # Clear or adjust stats label for synthesis; handled by caller on finalize
         else:
             self._showing_synthesis = False
             self.current_response_id = index
@@ -791,6 +792,41 @@ class MultiShotMessageRow(MessageRow):
                 self.reasoning_view.setHtml(
                     self._wrap_html(self._render_markdown(thinking))
                 )
+            # Update stats header for this specific response if available
+            metrics = self._response_metrics.get(index)
+            if metrics is not None:
+                reasoning_time = metrics.get("reasoning_time", 0.0)
+                response_time = metrics.get("response_time", 0.0)
+                token_count = int(metrics.get("token_count", 0))
+                if response_time > 0 or reasoning_time > 0:
+                    tokens_per_sec = (token_count / response_time) if response_time > 0 else 0.0
+                    if reasoning_time > 0 and response_time > 0:
+                        stats = f"{reasoning_time:.1f}s (reasoning) · {response_time:.1f}s (responding) · {tokens_per_sec:.1f} tokens/s"
+                    elif response_time > 0:
+                        stats = f"{response_time:.1f}s (responding) · {tokens_per_sec:.1f} tokens/s"
+                    else:
+                        stats = f"{reasoning_time:.1f}s (reasoning)"
+                    self.append_stats(stats)
+            else:
+                # No metrics yet for this response, clear stats label
+                self.append_stats("")
+
+    def set_response_metrics(self, response_id: int, reasoning_time: float, response_time: float, token_count: int) -> None:
+        """Store metrics for an individual response and update header if currently selected."""
+        self._response_metrics[response_id] = {
+            "reasoning_time": reasoning_time,
+            "response_time": response_time,
+            "token_count": float(token_count),
+        }
+        if not self._showing_synthesis and self.current_response_id == response_id:
+            tokens_per_sec = (token_count / response_time) if response_time > 0 else 0.0
+            if reasoning_time > 0 and response_time > 0:
+                stats = f"{reasoning_time:.1f}s (reasoning) · {response_time:.1f}s (responding) · {tokens_per_sec:.1f} tokens/s"
+            elif response_time > 0:
+                stats = f"{response_time:.1f}s (responding) · {tokens_per_sec:.1f} tokens/s"
+            else:
+                stats = f"{reasoning_time:.1f}s (reasoning)"
+            self.append_stats(stats)
 
 
 class StreamWorker(QtCore.QObject):
@@ -947,6 +983,29 @@ class EnsembleMessageRow(MessageRow):
         
         # Add synthesis as last option
         self.model_selector.addItem("Synthesis")
+
+        # Ensure reasoning UI exists but stays hidden until used
+        self.ensure_reasoning_controls()
+        self.reasoning_view.setVisible(False)
+
+    def _model_uses_m2m(self, model_name: Optional[str]) -> bool:
+        """Return True if the ensemble model's system prompt is based on M2M."""
+        if not model_name:
+            return False
+        try:
+            from system_prompts import SYSTEM_PROMPTS
+            m2m_prompt = next((p["prompt"] for p in SYSTEM_PROMPTS if p["name"] == "M2M"), None)
+            if not m2m_prompt:
+                return False
+            model_cfg = ENSEMBLE_MODELS.get(model_name)
+            if not model_cfg:
+                # Attempt reverse lookup by value
+                model_cfg = next((m for m in ENSEMBLE_MODELS.values() if getattr(m, "name", None) == model_name), None)
+            if not model_cfg:
+                return False
+            return m2m_prompt.strip() in model_cfg.system_prompt_enhancement
+        except Exception:
+            return False
         
     def add_model(self, model_name: str, display_name: str) -> None:
         """Add a model to the ensemble."""
@@ -1034,6 +1093,14 @@ class EnsembleMessageRow(MessageRow):
         self._synthesis_accumulator += token
         if self._showing_synthesis:
             self._update_current_display()
+        # Synthesis does not use M2M formatting unless synthesis model is M2M (it is not)
+
+    def append_synthesis_thinking(self, token: str) -> None:
+        """Append a streaming thinking token to synthesis reasoning and show UI."""
+        self._synthesis_thinking_accumulator += token
+        # Ensure reasoning controls exist and update
+        self.ensure_reasoning_controls()
+        self.append_reasoning(token)
             
     def finalize_ensemble(self, ensemble_response: EnsembleResponse) -> None:
         """Finalize the ensemble response."""
@@ -1048,6 +1115,32 @@ class EnsembleMessageRow(MessageRow):
         
         # Auto-select synthesis
         self.model_selector.setCurrentIndex(self.model_selector.count() - 1)
+
+        # Render reasoning block if present
+        if self._synthesis_thinking_accumulator:
+            self.ensure_reasoning_controls()
+            self.reasoning_view.setHtml(
+                self._wrap_html(self._render_markdown(self._synthesis_thinking_accumulator))
+            )
+            # Auto-show reasoning like regular responses
+            if hasattr(self, "reasoning_toggle"):
+                self.reasoning_toggle.setChecked(True)
+                self._toggle_reasoning()
+
+        # Add performance stats for synthesis (reasoning/responding/tokens per sec)
+        response_time = getattr(ensemble_response, "synthesis_response_time", 0.0)
+        reasoning_time = getattr(ensemble_response, "synthesis_reasoning_time", 0.0)
+        token_count = getattr(ensemble_response, "synthesis_token_count", 0)
+        if response_time > 0 or reasoning_time > 0:
+            tokens_per_sec = (token_count / response_time) if response_time > 0 else 0.0
+            # Match regular stats format for consistency
+            if reasoning_time > 0 and response_time > 0:
+                stats = f"{reasoning_time:.1f}s (reasoning) · {response_time:.1f}s (responding) · {tokens_per_sec:.1f} tokens/s"
+            elif response_time > 0:
+                stats = f"{response_time:.1f}s (responding) · {tokens_per_sec:.1f} tokens/s"
+            else:
+                stats = f"{reasoning_time:.1f}s (reasoning)"
+            self.append_stats(stats)
         
     def _on_model_selected(self, index: int) -> None:
         """Handle model selection change."""
@@ -1106,9 +1199,12 @@ class EnsembleMessageRow(MessageRow):
         else:
             content = ""
             
-        # Update the display using base class method
+        # Update the display using base class method. Apply M2M only if the selected model uses M2M
         if content:
-            self.set_markdown(content)
+            if self._showing_synthesis:
+                self.set_markdown(content, apply_m2m_formatting=False)
+            else:
+                self.set_markdown(content, apply_m2m_formatting=self._model_uses_m2m(self.current_model_name))
         else:
             self.set_plain_text("")
 
@@ -2409,6 +2505,17 @@ class ChatWindow(QtWidgets.QMainWindow):
         # Auto-save the chat after each message exchange
         self._save_current_chat()
         self._refresh_chat_history()
+
+        # If we just completed a multi-shot response, update metrics for the selected response tab too
+        if hasattr(self, "_current_multi_shot_bubble") and self._current_multi_shot_bubble:
+            # Update metrics for whichever response is currently selected if content matches
+            try:
+                current_id = self._current_multi_shot_bubble.current_response_id
+                if current_id >= 0:
+                    # Store metrics so switching tabs shows the header stats consistently
+                    self._current_multi_shot_bubble.set_response_metrics(current_id, reasoning_time, response_time, token_count)
+            except Exception:
+                pass
     
     def _on_stop_generation(self) -> None:
         """Stop the current generation."""
@@ -2513,6 +2620,7 @@ class ChatWindow(QtWidgets.QMainWindow):
         """Handle completion of a single response."""
         if hasattr(self, "_current_multi_shot_bubble") and self._current_multi_shot_bubble:
             self._current_multi_shot_bubble.finalize_response(response_id, content, thinking, temperature)
+            # We don't have per-response timing here; update when final message finishes
             
             # Auto-switch to next response as they complete (except for the last one)
             # This provides visual feedback of progress through the responses
@@ -2654,6 +2762,7 @@ class ChatWindow(QtWidgets.QMainWindow):
             title="Ensemble Assistant"
         )
         self._current_ensemble_bubble.set_plain_text("")
+        # Do not tie ensemble formatting to left-panel prompt; handled per-model in bubble
         
         # Add models to UI
         for model_config in ensemble_config.models:
@@ -2686,6 +2795,7 @@ class ChatWindow(QtWidgets.QMainWindow):
         
         # Synthesis signals
         self._ensemble_orchestrator.synthesis_token.connect(self._on_ensemble_synthesis_token)
+        self._ensemble_orchestrator.synthesis_thinking.connect(self._on_ensemble_synthesis_thinking)
         self._ensemble_orchestrator.synthesis_finished.connect(self._on_ensemble_synthesis_finished)
         
         # Progress and status
@@ -2730,6 +2840,12 @@ class ChatWindow(QtWidgets.QMainWindow):
                 )
             self._current_ensemble_bubble.append_synthesis_token(token)
             self.scroll_to_bottom_if_needed()
+
+    @QtCore.Slot(str)
+    def _on_ensemble_synthesis_thinking(self, token: str) -> None:
+        """Handle streaming synthesis reasoning tokens."""
+        if hasattr(self, "_current_ensemble_bubble") and self._current_ensemble_bubble:
+            self._current_ensemble_bubble.append_synthesis_thinking(token)
     
     @QtCore.Slot(EnsembleResponse)
     def _on_ensemble_synthesis_finished(self, ensemble_response: EnsembleResponse) -> None:
@@ -2742,6 +2858,9 @@ class ChatWindow(QtWidgets.QMainWindow):
                 role="assistant",
                 content=ensemble_response.final_content,
                 thinking=ensemble_response.final_thinking,
+                reasoning_time=getattr(ensemble_response, "synthesis_reasoning_time", None),
+                response_time=getattr(ensemble_response, "synthesis_response_time", None),
+                token_count=getattr(ensemble_response, "synthesis_token_count", None),
                 multi_shot={
                     "ensemble": True,
                     "models": [r.model_name for r in ensemble_response.model_responses],
