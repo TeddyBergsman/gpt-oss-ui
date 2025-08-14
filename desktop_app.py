@@ -918,6 +918,8 @@ class MultiShotWorker(QtCore.QObject):
         
         # Calculate temperature distribution
         self.temperatures = self._calculate_temperatures(response_count)
+        # Track current generating response id
+        self._current_response_id: int | None = None
     
     def _calculate_temperatures(self, count: int) -> List[float]:
         """Generate temperature values with intelligent distribution based on research.
@@ -1079,6 +1081,7 @@ class MultiShotWorker(QtCore.QObject):
         if self._stop_requested or response_id >= self.response_count:
             return
         
+        self._current_response_id = response_id
         temperature = self.temperatures[response_id]
         options = self.base_options.copy()
         options["temperature"] = temperature
@@ -1105,6 +1108,25 @@ class MultiShotWorker(QtCore.QObject):
         
         # Start this response
         thread.start()
+
+    def retry_current_response(self) -> None:
+        """Abort and restart only the currently running response."""
+        if self._current_response_id is None:
+            return
+        rid = self._current_response_id
+        try:
+            resp = self.responses[rid]
+            if resp.worker:
+                resp.worker.request_stop()
+            if resp.thread:
+                resp.thread.quit(); resp.thread.wait()
+        except Exception:
+            pass
+        # Reset content buffers for that response
+        self.responses[rid].content = ""
+        self.responses[rid].thinking = ""
+        # Restart the same response id
+        QtCore.QTimer.singleShot(0, lambda: self._start_next_response(rid))
     
     def _on_response_token(self, response_id: int, token: str) -> None:
         """Handle streaming token from a response."""
@@ -1421,6 +1443,8 @@ class ChatHistoryItem(QtWidgets.QWidget):
 
 
 class ChatWindow(QtWidgets.QMainWindow):
+    # Request that the multi-shot worker retries a specific response id
+    multi_shot_retry_request = QtCore.Signal(int)
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("GPT-OSS Desktop")
@@ -2402,6 +2426,25 @@ class ChatWindow(QtWidgets.QMainWindow):
         self.session.add_user_message(user_text, self.selected_images)
         self._append_chat("user", user_text, images=self.selected_images)
         
+        # Initialize apology retry state for multi-shot
+        if self.apology_retry_max > 0:
+            try:
+                from copy import deepcopy as _deepcopy
+                self._apology_retry_active = True
+                self._apology_retry_attempts = 0
+                self._apology_retry_original_text = user_text
+                self._apology_retry_images = _deepcopy(self.selected_images) if self.selected_images else []
+            except Exception:
+                self._apology_retry_active = True
+                self._apology_retry_attempts = 0
+                self._apology_retry_original_text = user_text
+                self._apology_retry_images = []
+        else:
+            self._apology_retry_active = False
+            self._apology_retry_attempts = 0
+            self._apology_retry_original_text = ""
+            self._apology_retry_images = []
+
         # Clear selected images after sending
         self._clear_selected_images()
 
@@ -2568,6 +2611,16 @@ class ChatWindow(QtWidgets.QMainWindow):
             self.stop_button.setEnabled(False)  # Prevent multiple clicks
         elif hasattr(self, "_multi_shot_worker") and self._multi_shot_worker:
             self._multi_shot_worker.request_stop()
+            try:
+                for resp in getattr(self._multi_shot_worker, "responses", []) or []:
+                    th = getattr(resp, "thread", None)
+                    if th:
+                        th.quit(); th.wait()
+                syn_th = getattr(self._multi_shot_worker, "synthesis_thread", None)
+                if syn_th:
+                    syn_th.quit(); syn_th.wait()
+            except Exception:
+                pass
             self.stop_button.setEnabled(False)
         # Cancel any in-progress apology retry for this turn
         self._apology_retry_active = False
@@ -2697,6 +2750,12 @@ class ChatWindow(QtWidgets.QMainWindow):
         )
         self._multi_shot_worker.moveToThread(self._multi_shot_thread)
         
+        # Reset detection state for multi-shot
+        self._ignore_multi_shot_events = False
+        self._multi_shot_streamed_prefixes = {}
+        self._ms_apology_triggered = False
+        self._ms_last_apology_response_id = None
+
         # Connect streaming signals
         self._multi_shot_thread.started.connect(self._multi_shot_worker.run)
         
@@ -2725,13 +2784,33 @@ class ChatWindow(QtWidgets.QMainWindow):
     @QtCore.Slot(int, str)
     def _on_multi_shot_token(self, response_id: int, token: str) -> None:
         """Handle streaming token from a response."""
+        if getattr(self, "_ignore_multi_shot_events", False):
+            return
         if hasattr(self, "_current_multi_shot_bubble") and self._current_multi_shot_bubble:
+            # Detect apology in any response prefix
+            if (
+                self._apology_retry_active
+                and self.apology_retry_max > 0
+                and self._apology_retry_attempts < self.apology_retry_max
+                and not getattr(self, "_ms_apology_triggered", False)
+            ):
+                prev = getattr(self, "_multi_shot_streamed_prefixes", {}).get(response_id, "")
+                prev += token
+                self._multi_shot_streamed_prefixes[response_id] = prev
+                prefix = prev.lstrip()
+                if re.match(r"^(i['’]m\s+sorry)[\s,\.:;!?-]*", prefix, re.IGNORECASE):
+                    self._ms_apology_triggered = True
+                    self._ms_last_apology_response_id = response_id
+                    self._trigger_apology_retry_multi_shot()
+                    return
             self._current_multi_shot_bubble.append_response_token(response_id, token)
             self.scroll_to_bottom_if_needed()
     
     @QtCore.Slot(int, str)
     def _on_multi_shot_thinking(self, response_id: int, token: str) -> None:
         """Handle streaming thinking token from a response."""
+        if getattr(self, "_ignore_multi_shot_events", False):
+            return
         if hasattr(self, "_current_multi_shot_bubble") and self._current_multi_shot_bubble:
             self._current_multi_shot_bubble.append_response_thinking(response_id, token)
             self.scroll_to_bottom_if_needed()
@@ -2739,6 +2818,8 @@ class ChatWindow(QtWidgets.QMainWindow):
     @QtCore.Slot(int, str, str, float)
     def _on_multi_shot_response_finished(self, response_id: int, content: str, thinking: str, temperature: float) -> None:
         """Handle completion of a single response."""
+        if getattr(self, "_ignore_multi_shot_events", False):
+            return
         if hasattr(self, "_current_multi_shot_bubble") and self._current_multi_shot_bubble:
             self._current_multi_shot_bubble.finalize_response(response_id, content, thinking, temperature)
             
@@ -2751,6 +2832,8 @@ class ChatWindow(QtWidgets.QMainWindow):
     @QtCore.Slot(str)
     def _on_synthesis_token(self, token: str) -> None:
         """Handle streaming synthesis token."""
+        if getattr(self, "_ignore_multi_shot_events", False):
+            return
         if hasattr(self, "_current_multi_shot_bubble") and self._current_multi_shot_bubble:
             self._current_multi_shot_bubble.append_synthesis_token(token)
             self.scroll_to_bottom_if_needed()
@@ -2758,6 +2841,8 @@ class ChatWindow(QtWidgets.QMainWindow):
     @QtCore.Slot(str)
     def _on_synthesis_thinking(self, token: str) -> None:
         """Handle streaming synthesis thinking token."""
+        if getattr(self, "_ignore_multi_shot_events", False):
+            return
         if hasattr(self, "_current_multi_shot_bubble") and self._current_multi_shot_bubble:
             self._current_multi_shot_bubble.append_synthesis_thinking(token)
             self.scroll_to_bottom_if_needed()
@@ -2765,6 +2850,8 @@ class ChatWindow(QtWidgets.QMainWindow):
     @QtCore.Slot(str, str)
     def _on_synthesis_finished(self, content: str, thinking: str) -> None:
         """Handle completion of synthesis."""
+        if getattr(self, "_ignore_multi_shot_events", False):
+            return
         if hasattr(self, "_current_multi_shot_bubble") and self._current_multi_shot_bubble:
             # Finalize synthesis and auto-select it
             self._current_multi_shot_bubble.finalize_synthesis(content, thinking)
@@ -2856,6 +2943,66 @@ class ChatWindow(QtWidgets.QMainWindow):
         if hasattr(self, "_multi_shot_thread"):
             self._multi_shot_thread.quit()
             self._multi_shot_thread.wait()
+        # Ensure all per-response threads and synthesis thread have stopped
+        try:
+            if hasattr(self, "_multi_shot_worker") and self._multi_shot_worker:
+                for resp in getattr(self._multi_shot_worker, "responses", []) or []:
+                    th = getattr(resp, "thread", None)
+                    if th:
+                        try:
+                            th.quit()
+                            th.wait()
+                        except Exception:
+                            pass
+                syn_th = getattr(self._multi_shot_worker, "synthesis_thread", None)
+                if syn_th:
+                    try:
+                        syn_th.quit()
+                        syn_th.wait()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    def _trigger_apology_retry_multi_shot(self) -> None:
+        """Abort just the currently running multi-shot response and retry that slot, preserving others."""
+        if not (self._apology_retry_active and self._apology_retry_attempts < self.apology_retry_max):
+            return
+        rid = getattr(self, "_ms_last_apology_response_id", None)
+        if rid is None:
+            return
+        self._apology_retry_attempts += 1
+
+        # Stop only the current response thread
+        try:
+            if hasattr(self, "_multi_shot_worker") and self._multi_shot_worker:
+                resp = self._multi_shot_worker.responses[rid]
+                if resp.worker:
+                    resp.worker.request_stop()
+                if resp.thread:
+                    resp.thread.quit(); resp.thread.wait()
+        except Exception:
+            pass
+
+        # Clear just that response's prefix accumulator and UI accumulator
+        try:
+            if hasattr(self, "_multi_shot_streamed_prefixes") and rid in self._multi_shot_streamed_prefixes:
+                del self._multi_shot_streamed_prefixes[rid]
+            if hasattr(self, "_current_multi_shot_bubble") and self._current_multi_shot_bubble:
+                self._current_multi_shot_bubble._response_accumulators[rid] = ""
+                self._current_multi_shot_bubble._thinking_accumulators[rid] = ""
+        except Exception:
+            pass
+
+        # Reset flag so we can catch apology again for this slot
+        self._ms_apology_triggered = False
+
+        # Restart only that response in the worker
+        try:
+            if hasattr(self, "_multi_shot_worker") and self._multi_shot_worker:
+                self._multi_shot_worker.retry_current_response()
+        except Exception:
+            pass
 
     # --- Message helpers ---
     def _add_row(self, row: 'MessageRow') -> None:
