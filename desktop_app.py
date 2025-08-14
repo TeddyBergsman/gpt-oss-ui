@@ -13,6 +13,7 @@ from ollama import chat as ollama_chat
 
 import config
 from system_prompts import SYSTEM_PROMPTS
+from core.presets import PresetManager
 from core.chat_service import ChatSession, ChatMessage, REASONING_OPTIONS
 from core.m2m_formatter import parse_m2m_output, format_m2m_to_markdown, is_m2m_format, debug_print_parsed_data
 from core.chat_persistence import ChatPersistence
@@ -1448,6 +1449,10 @@ class ChatWindow(QtWidgets.QMainWindow):
         # Initialize chat persistence
         self.chat_persistence = ChatPersistence()
 
+        # Presets manager
+        self.preset_manager = PresetManager()
+        self._pending_preset_apply: bool = False
+
         # --- UI ---
         central_widget = QtWidgets.QWidget(self)
         self.setCentralWidget(central_widget)
@@ -1510,7 +1515,23 @@ class ChatWindow(QtWidgets.QMainWindow):
         self.sidebar_collapse_btn.setVisible(True)
         card_layout.addLayout(header_row)
 
-        # Model picker at the top
+        # Preset selector row at the very top of settings
+        preset_row = QtWidgets.QHBoxLayout()
+        preset_row.setContentsMargins(0, 0, 0, 0)
+        preset_row.setSpacing(8)
+        preset_label = QtWidgets.QLabel("Preset")
+        preset_row.addWidget(preset_label)
+        self.preset_combo = QtWidgets.QComboBox()
+        self._configure_combo(self.preset_combo)
+        self.preset_combo.currentIndexChanged.connect(self._on_preset_selected)
+        preset_row.addWidget(self.preset_combo, 1)
+        self.save_preset_btn = QtWidgets.QToolButton()
+        self.save_preset_btn.setText("Save")
+        self.save_preset_btn.clicked.connect(self._on_save_preset)
+        preset_row.addWidget(self.save_preset_btn)
+        card_layout.addLayout(preset_row)
+
+        # Model picker and other settings
         form = QtWidgets.QFormLayout()
         form.setFormAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop)
         form.setHorizontalSpacing(12)
@@ -1747,6 +1768,9 @@ class ChatWindow(QtWidgets.QMainWindow):
         self.image_button.clicked.connect(self._on_add_image)
         input_layout.addWidget(self.image_button)
         
+        # Populate presets and apply last selected if present (after image_button exists)
+        self._reload_presets_into_ui()
+        
         self.send_button = QtWidgets.QPushButton()
         if qta:
             self.send_button.setIcon(qta.icon("mdi.send"))
@@ -1901,6 +1925,132 @@ class ChatWindow(QtWidgets.QMainWindow):
         # Keep session in sync so new turns use the updated temperature
         if hasattr(self, "session"):
             self.session.temperature = self.temperature
+
+    # --- Presets ---
+    def _collect_current_settings_for_preset(self) -> dict:
+        model_name = config.AVAILABLE_MODELS[self.selected_model_index]["name"]
+        prompt_name = SYSTEM_PROMPTS[self.selected_prompt_index]["name"]
+        reasoning_effort = REASONING_OPTIONS[self.selected_reasoning_index]
+        return {
+            "model_name": model_name,
+            "system_prompt_name": prompt_name,
+            "reasoning_effort": reasoning_effort,
+            "temperature": float(self.temperature),
+            "multi_shot_count": int(self.multi_shot_count),
+            "compliance_enabled": bool(self.add_special_message),
+        }
+
+    def _apply_preset(self, preset: dict) -> None:
+        # Resolve indices
+        model_name = preset.get("model_name", config.AVAILABLE_MODELS[0]["name"])
+        prompt_name = preset.get("system_prompt_name", SYSTEM_PROMPTS[0]["name"])
+        reasoning_effort = preset.get("reasoning_effort", "None")
+        temperature = float(preset.get("temperature", config.AVAILABLE_MODELS[0]["default_temperature"]))
+        multi_shot_count = int(preset.get("multi_shot_count", 10))
+        compliance_enabled = bool(preset.get("compliance_enabled", False))
+
+        model_index = next((i for i, m in enumerate(config.AVAILABLE_MODELS) if m["name"] == model_name), 0)
+        prompt_index = next((i for i, p in enumerate(SYSTEM_PROMPTS) if p["name"] == prompt_name), 0)
+        reasoning_index = next((i for i, r in enumerate(REASONING_OPTIONS) if r == reasoning_effort), len(REASONING_OPTIONS) - 1)
+
+        # Block signals for UI widgets being set programmatically
+        widgets = [
+            self.model_combo,
+            self.prompt_combo,
+            self.reasoning_combo,
+            self.temperature_slider,
+            self.multi_shot_slider,
+            self.compliance_checkbox,
+        ]
+        for w in widgets:
+            try:
+                w.blockSignals(True)
+            except Exception:
+                pass
+
+        # Update internal state
+        self.selected_model_index = model_index
+        self.selected_prompt_index = prompt_index
+        self.selected_reasoning_index = reasoning_index
+        self.temperature = temperature
+        self.multi_shot_count = multi_shot_count
+        self.add_special_message = compliance_enabled
+
+        # Recreate session for new combination
+        self.current_chat_id = None
+        self.session = ChatSession(
+            base_system_prompt=SYSTEM_PROMPTS[self.selected_prompt_index]["prompt"],
+            model_name=config.AVAILABLE_MODELS[self.selected_model_index]["name"],
+            temperature=self.temperature,
+        )
+
+        # Set UI widgets to reflect state
+        self.model_combo.setCurrentIndex(self.selected_model_index)
+        self._update_ui_for_model(self.selected_model_index)
+        self.prompt_combo.setCurrentIndex(self.selected_prompt_index)
+        self.reasoning_combo.setCurrentIndex(self.selected_reasoning_index)
+        self.temperature_slider.setValue(int(self.temperature * 10))
+        self.temperature_value_label.setText(f"{self.temperature:.1f}")
+        self.multi_shot_slider.setValue(self.multi_shot_count)
+        self.multi_shot_value_label.setText(str(self.multi_shot_count))
+        self.compliance_checkbox.setChecked(self.add_special_message)
+
+        for w in widgets:
+            try:
+                w.blockSignals(False)
+            except Exception:
+                pass
+
+        # Re-render for new session
+        self._render_history()
+        self._refresh_chat_history()
+
+    def _reload_presets_into_ui(self) -> None:
+        presets = self.preset_manager.list_presets()
+        current_name = self.preset_combo.currentText() if hasattr(self, "preset_combo") else ""
+        self.preset_combo.blockSignals(True)
+        self.preset_combo.clear()
+        for p in presets:
+            name = p.get("name") or "Unnamed"
+            self.preset_combo.addItem(name)
+        self.preset_combo.blockSignals(False)
+
+        # Select last used or first
+        last = self.preset_manager.get_last_selected()
+        target_name = last or (presets[0]["name"] if presets else "")
+        if target_name:
+            idx = self.preset_combo.findText(target_name)
+            if idx >= 0:
+                self.preset_combo.setCurrentIndex(idx)
+                # Apply automatically on startup
+                preset = self.preset_manager.get_preset_by_name(target_name)
+                if preset:
+                    self._apply_preset(preset)
+
+    def _on_preset_selected(self, index: int) -> None:
+        if index < 0:
+            return
+        name = self.preset_combo.itemText(index)
+        preset = self.preset_manager.get_preset_by_name(name)
+        if not preset:
+            return
+        self.preset_manager.set_last_selected(name)
+        self._apply_preset(preset)
+
+    def _on_save_preset(self) -> None:
+        from PySide6.QtWidgets import QInputDialog
+        # Default to current preset name if any
+        default_name = self.preset_combo.currentText() or "New Preset"
+        name, ok = QInputDialog.getText(self, "Save Preset", "Preset name:", text=default_name)
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        data = self._collect_current_settings_for_preset()
+        data["name"] = name
+        self.preset_manager.upsert_preset(data)
+        self.preset_manager.set_last_selected(name)
+        # Reload into UI and select the saved preset
+        self._reload_presets_into_ui()
 
     def _update_ui_for_model(self, model_index: int) -> None:
         """Update UI elements based on model capabilities."""

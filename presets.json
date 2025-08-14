@@ -1,0 +1,32 @@
+{
+  "presets": [
+    {
+      "name": "Default",
+      "model_name": "gemma3:12b",
+      "system_prompt_name": "Assistant",
+      "reasoning_effort": "None",
+      "temperature": 0.7,
+      "multi_shot_count": 10,
+      "compliance_enabled": false
+    },
+    {
+      "model_name": "huihui_ai/mistral-small-abliterated:24b",
+      "system_prompt_name": "Shadow",
+      "reasoning_effort": "None",
+      "temperature": 0.9,
+      "multi_shot_count": 10,
+      "compliance_enabled": false,
+      "name": "Uncensored 24B"
+    },
+    {
+      "model_name": "gpt-oss:20b",
+      "system_prompt_name": "Absolute",
+      "reasoning_effort": "High",
+      "temperature": 0.8,
+      "multi_shot_count": 10,
+      "compliance_enabled": true,
+      "name": "Uncensored GPT"
+    }
+  ],
+  "last_selected": "Uncensored GPT"
+}
