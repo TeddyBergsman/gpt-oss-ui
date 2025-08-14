@@ -355,7 +355,13 @@ Format: Provide a clear, comprehensive answer that represents the best collectiv
                         token_counter += 1
                         self.token.emit(token)
                     
-                    thinking_content = message.get("thinking_content", message.get("reasoning_content"))
+                    # Normalize reasoning keys from various models/providers
+                    thinking_content = (
+                        message.get("thinking")
+                        or message.get("reasoning")
+                        or message.get("thinking_content")
+                        or message.get("reasoning_content")
+                    )
                     if thinking_content:
                         thinking_accumulator += thinking_content
                         self.thinking.emit(thinking_content)

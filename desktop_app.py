@@ -766,7 +766,14 @@ class MultiShotMessageRow(MessageRow):
         
         # Clear existing reasoning display
         if hasattr(self, 'reasoning_view'):
-            self.reasoning_view.setHtml(self._wrap_html(""))
+            # Reset accumulator to selected context's reasoning to avoid bleed
+            if index == self.response_count:
+                self._reasoning_accumulator = getattr(self, '_synthesis_thinking_accumulator', "")
+            else:
+                self._reasoning_accumulator = self._thinking_accumulators.get(index, "")
+            self.reasoning_view.setHtml(
+                self._wrap_html(self._render_markdown(self._reasoning_accumulator))
+            )
         
         if index == self.response_count:  # Synthesis
             self._showing_synthesis = True
@@ -940,10 +947,15 @@ class EnsembleMessageRow(MessageRow):
         self.current_model_name: Optional[str] = None
         self.current_response_id: int = 0
         self._showing_synthesis = False
+        # Per-model accumulators keyed by LOCAL response index (0..responses_per_model-1)
         self._model_accumulators: Dict[str, Dict[int, str]] = {}
         self._model_thinking_accumulators: Dict[str, Dict[int, str]] = {}
         self._synthesis_accumulator = ""
         self._synthesis_thinking_accumulator = ""
+        # Configurable number of responses per model (default 3; set from sidebar)
+        self.responses_per_model: int = 3
+        # Preserve the order in which models are added
+        self._ordered_model_names: List[str] = []
         
         # Initialize UI components
         self._init_ensemble_ui()
@@ -1012,6 +1024,7 @@ class EnsembleMessageRow(MessageRow):
         self.model_selector.insertItem(self.model_selector.count() - 1, display_name)
         self.model_responses[model_name] = []
         self._model_accumulators[model_name] = {}
+        self._ordered_model_names.append(model_name)
         
         # If this is the first model, select it and update response selector
         if len(self.model_responses) == 1:
@@ -1026,31 +1039,24 @@ class EnsembleMessageRow(MessageRow):
         if model_name not in self._model_accumulators:
             self._model_accumulators[model_name] = {}
         
-        # Ensure the response_id accumulator exists
-        if response_id not in self._model_accumulators[model_name]:
-            self._model_accumulators[model_name][response_id] = ""
+        # Map global response_id to local index for this model
+        local_response_id = response_id % max(1, self.responses_per_model)
+        
+        # Ensure the local accumulator exists
+        if local_response_id not in self._model_accumulators[model_name]:
+            self._model_accumulators[model_name][local_response_id] = ""
             
             # Auto-switch to this model/response when it starts
-            # Find model index based on ordered list
-            ordered_model_names = [
-                "gpt-oss:20b",
-                "gemma3:12b", 
-                "qwen3:30b",
-                "deepseek-r1:32b",
-                "huihui_ai/mistral-small-abliterated:24b"
-            ]
-            if model_name in ordered_model_names:
-                model_index = ordered_model_names.index(model_name)
+            if model_name in self._ordered_model_names:
+                model_index = self._ordered_model_names.index(model_name)
                 self.model_selector.setCurrentIndex(model_index)
-                # Convert response_id to local index for this model
-                local_response_id = response_id % 3  # Assuming 3 responses per model
                 self.response_selector.setCurrentIndex(local_response_id)
-            
-        self._model_accumulators[model_name][response_id] += token
+        
+        self._model_accumulators[model_name][local_response_id] += token
         
         # Update display if this model/response is selected
         if (self.current_model_name == model_name and 
-            self.current_response_id == response_id % 3 and 
+            self.current_response_id == local_response_id and 
             not self._showing_synthesis):
             self._update_current_display()
             
@@ -1064,15 +1070,16 @@ class EnsembleMessageRow(MessageRow):
         if model_name not in self._model_thinking_accumulators:
             self._model_thinking_accumulators[model_name] = {}
         
-        # Ensure the response_id thinking accumulator exists
-        if response_id not in self._model_thinking_accumulators[model_name]:
-            self._model_thinking_accumulators[model_name][response_id] = ""
+        # Map to local index and ensure the thinking accumulator exists
+        local_response_id = response_id % max(1, self.responses_per_model)
+        if local_response_id not in self._model_thinking_accumulators[model_name]:
+            self._model_thinking_accumulators[model_name][local_response_id] = ""
             
-        self._model_thinking_accumulators[model_name][response_id] += token
+        self._model_thinking_accumulators[model_name][local_response_id] += token
         
         # Update reasoning display if this model/response is selected and has reasoning
         if (self.current_model_name == model_name and 
-            self.current_response_id == response_id and 
+            self.current_response_id == local_response_id and 
             not self._showing_synthesis):
             # Ensure reasoning controls exist
             self.ensure_reasoning_controls()
@@ -1150,6 +1157,12 @@ class EnsembleMessageRow(MessageRow):
             self.response_selector.clear()
             self.response_selector.setEnabled(False)
             self._update_current_display()
+            # Reset reasoning accumulator to synthesis thinking
+            if hasattr(self, 'reasoning_view'):
+                self._reasoning_accumulator = getattr(self, '_synthesis_thinking_accumulator', "")
+                self.reasoning_view.setHtml(
+                    self._wrap_html(self._render_markdown(self._reasoning_accumulator))
+                )
         else:
             self._showing_synthesis = False
             # Get model name from index
@@ -1158,6 +1171,14 @@ class EnsembleMessageRow(MessageRow):
                 self.current_model_name = model_names[index]
                 self._update_response_selector()
                 self.response_selector.setEnabled(True)
+                # Reset reasoning accumulator to current model/current response thinking
+                if hasattr(self, 'reasoning_view'):
+                    thinking_map = self._model_thinking_accumulators.get(self.current_model_name, {})
+                    current_thinking = thinking_map.get(self.current_response_id, "")
+                    self._reasoning_accumulator = current_thinking
+                    self.reasoning_view.setHtml(
+                        self._wrap_html(self._render_markdown(self._reasoning_accumulator))
+                    )
                 
     def _update_response_selector(self) -> None:
         """Update response selector for current model."""
@@ -1166,7 +1187,7 @@ class EnsembleMessageRow(MessageRow):
             # Get temperatures for this model
             model_config = next((m for m in ENSEMBLE_MODELS.values() if m.name == self.current_model_name), None)
             if model_config:
-                temperatures = model_config.get_temperatures(3)  # Default to 3 responses per model
+                temperatures = model_config.get_temperatures(self.responses_per_model)
                 for i, temp in enumerate(temperatures):
                     self.response_selector.addItem(f"T:{temp:.1f}")
                 
@@ -1175,27 +1196,22 @@ class EnsembleMessageRow(MessageRow):
         if index >= 0:
             self.current_response_id = index
             self._update_current_display()
+            # Reset reasoning accumulator to newly selected response's thinking
+            if hasattr(self, 'reasoning_view') and self.current_model_name:
+                thinking_map = self._model_thinking_accumulators.get(self.current_model_name, {})
+                current_thinking = thinking_map.get(self.current_response_id, "")
+                self._reasoning_accumulator = current_thinking
+                self.reasoning_view.setHtml(
+                    self._wrap_html(self._render_markdown(self._reasoning_accumulator))
+                )
             
     def _update_current_display(self) -> None:
         """Update the display based on current selection."""
         if self._showing_synthesis:
             content = self._synthesis_accumulator
         elif self.current_model_name and self.current_model_name in self._model_accumulators:
-            # Find the correct response_id for this model and local response index
-            ordered_model_names = [
-                "gpt-oss:20b",
-                "gemma3:12b", 
-                "qwen3:30b",
-                "deepseek-r1:32b",
-                "huihui_ai/mistral-small-abliterated:24b"
-            ]
-            if self.current_model_name in ordered_model_names:
-                model_index = ordered_model_names.index(self.current_model_name)
-                # Calculate global response_id based on model index and local response id
-                global_response_id = model_index * 3 + self.current_response_id
-                content = self._model_accumulators[self.current_model_name].get(global_response_id, "")
-            else:
-                content = ""
+            # Fetch content by local response index directly
+            content = self._model_accumulators[self.current_model_name].get(self.current_response_id, "")
         else:
             content = ""
             
@@ -2639,6 +2655,7 @@ class ChatWindow(QtWidgets.QMainWindow):
     def _on_synthesis_thinking(self, token: str) -> None:
         """Handle streaming synthesis thinking token."""
         if hasattr(self, "_current_multi_shot_bubble") and self._current_multi_shot_bubble:
+            # Ensure reasoning goes to reasoning pane, not main bubble
             self._current_multi_shot_bubble.append_synthesis_thinking(token)
             self.scroll_to_bottom_if_needed()
     
@@ -2741,6 +2758,11 @@ class ChatWindow(QtWidgets.QMainWindow):
         """Start ensemble generation with multiple models."""
         # Get ensemble configuration
         ensemble_config = EnsembleConfig.default()
+        # Use the sidebar multi-shot count for responses per model
+        try:
+            ensemble_config.response_per_model = int(self.multi_shot_count)
+        except Exception:
+            pass
         
         # Build base messages for ensemble (without model-specific options)
         # Each model will get its own options based on its capabilities
@@ -2767,6 +2789,8 @@ class ChatWindow(QtWidgets.QMainWindow):
         # Add models to UI
         for model_config in ensemble_config.models:
             self._current_ensemble_bubble.add_model(model_config.name, model_config.display_name)
+        # Inform the bubble how many responses per model to expect
+        self._current_ensemble_bubble.responses_per_model = ensemble_config.response_per_model
         
         self._add_row(self._current_ensemble_bubble)
         
@@ -2882,21 +2906,17 @@ class ChatWindow(QtWidgets.QMainWindow):
             
             # Determine current model being processed
             if completed < total:
-                ordered_model_names = [
-                    "gpt-oss:20b",
-                    "gemma3:12b", 
-                    "qwen3:30b",
-                    "deepseek-r1:32b",
-                    "huihui_ai/mistral-small-abliterated:24b"
-                ]
-                current_model_idx = completed // 3
+                # Use the dynamic model order and responses_per_model
+                ordered_model_names = self._current_ensemble_bubble._ordered_model_names
+                per_model = max(1, self._current_ensemble_bubble.responses_per_model)
+                current_model_idx = completed // per_model
                 if current_model_idx < len(ordered_model_names):
                     from model_configs import ENSEMBLE_MODELS
                     model_name = ordered_model_names[current_model_idx]
-                    model_display = ENSEMBLE_MODELS[model_name].display_name.split(' (')[0]  # Get short name
-                    local_response = completed % 3 + 1
+                    model_display = ENSEMBLE_MODELS[model_name].display_name.split(' (')[0]
+                    local_response = completed % per_model + 1
                     self._current_ensemble_bubble.progress_label.setText(
-                        f"Processing: {model_display} ({local_response}/3) • Total: {completed}/{total} ({percentage}%)"
+                        f"Processing: {model_display} ({local_response}/{per_model}) • Total: {completed}/{total} ({percentage}%)"
                     )
                 else:
                     self._current_ensemble_bubble.progress_label.setText(f"Responses: {completed}/{total} ({percentage}%)")

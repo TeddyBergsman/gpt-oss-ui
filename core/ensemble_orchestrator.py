@@ -190,7 +190,13 @@ class ModelWorker(QtCore.QObject):
                         self.token.emit(token)
                     
                     # Handle thinking streaming (for reasoning models)
-                    thinking_content = message.get("thinking_content", message.get("reasoning_content"))
+                    # Normalize across different providers/keys
+                    thinking_content = (
+                        message.get("thinking")
+                        or message.get("reasoning")
+                        or message.get("thinking_content")
+                        or message.get("reasoning_content")
+                    )
                     if thinking_content:
                         self._thinking_accumulator += thinking_content
                         self.thinking.emit(thinking_content)
