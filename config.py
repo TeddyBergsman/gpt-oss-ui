@@ -6,6 +6,13 @@ from pathlib import Path
 MODEL_NAME = "gemma3:12b"  # Default model
 
 # Available models with their capabilities
+# Default temperatures based on model research and common practices:
+# - Gemma models: 0.7 (balanced between creativity and coherence)
+# - GPT-OSS models: 0.8 (slightly more creative)
+# - Qwen models: 0.7 (balanced)
+# - DeepSeek models: 0.7 (balanced)
+# - Abliterated models: 0.9 (more creative by design)
+
 AVAILABLE_MODELS = [
     {
         "name": "gemma3:12b",
@@ -14,6 +21,7 @@ AVAILABLE_MODELS = [
         "supports_compliance": False,
         "supports_images": True,
         "context_window": 128000,  # 128K tokens
+        "default_temperature": 0.7
     },
     {
         "name": "gpt-oss:20b",
@@ -22,6 +30,7 @@ AVAILABLE_MODELS = [
         "supports_compliance": True,
         "supports_images": False,
         "context_window": 128000,  # Estimated, no official spec found
+        "default_temperature": 0.8
     },
     {
         "name": "gpt-oss:120b",
@@ -30,6 +39,7 @@ AVAILABLE_MODELS = [
         "supports_compliance": True,
         "supports_images": False,
         "context_window": 128000,  # Estimated, no official spec found
+        "default_temperature": 0.8
     },
     {
         "name": "gemma3:27b",
@@ -38,6 +48,7 @@ AVAILABLE_MODELS = [
         "supports_compliance": False,
         "supports_images": True,
         "context_window": 128000,  # 128K tokens
+        "default_temperature": 0.7
     },
     {
         "name": "gemma3:4b",
@@ -46,6 +57,7 @@ AVAILABLE_MODELS = [
         "supports_compliance": False,
         "supports_images": True,
         "context_window": 128000,  # 128K tokens
+        "default_temperature": 0.7
     },
     {
         "name": "gemma3:1b",
@@ -54,6 +66,7 @@ AVAILABLE_MODELS = [
         "supports_compliance": False,
         "supports_images": True,
         "context_window": 32000,  # 32K tokens
+        "default_temperature": 0.7
     },
     {
         "name": "gemma3:270m",
@@ -62,6 +75,7 @@ AVAILABLE_MODELS = [
         "supports_compliance": False,
         "supports_images": True,
         "context_window": 32000,  # 32K tokens
+        "default_temperature": 0.7
     },
     {
         "name": "qwen3:30b",
@@ -70,6 +84,7 @@ AVAILABLE_MODELS = [
         "supports_compliance": False,
         "supports_images": False,
         "context_window": 256000,  # Up to 131K with YaRN
+        "default_temperature": 0.7
     },
     {
         "name": "qwen3:235b",
@@ -77,7 +92,8 @@ AVAILABLE_MODELS = [
         "supports_reasoning": True,  # Has thinking/non-thinking modes
         "supports_compliance": False,
         "supports_images": False,
-        "context_window": 256000, 
+        "context_window": 256000,
+        "default_temperature": 0.7
     },
     {
         "name": "deepseek-r1:8b",
@@ -86,6 +102,7 @@ AVAILABLE_MODELS = [
         "supports_compliance": False,
         "supports_images": False,
         "context_window": 128000,  # Estimated, no official spec found
+        "default_temperature": 0.7
     },
     {
         "name": "deepseek-r1:32b",
@@ -94,6 +111,7 @@ AVAILABLE_MODELS = [
         "supports_compliance": False,
         "supports_images": False,
         "context_window": 128000,  # Estimated, no official spec found
+        "default_temperature": 0.7
     },
     {
         "name": "deepseek-r1:70b",
@@ -102,6 +120,7 @@ AVAILABLE_MODELS = [
         "supports_compliance": False,
         "supports_images": False,
         "context_window": 128000,  # Estimated, no official spec found
+        "default_temperature": 0.7
     },
     {
         "name": "huihui_ai/gemma3n-abliterated:e2b-fp16",
@@ -110,6 +129,7 @@ AVAILABLE_MODELS = [
         "supports_compliance": False,  # Uncensored models don't support compliance
         "supports_images": True,  # Based on Gemma3
         "context_window": 32000,  # Based on Gemma3
+        "default_temperature": 0.9
     },
     {
         "name": "huihui_ai/gemma3n-abliterated:e4b-fp16",
@@ -118,6 +138,7 @@ AVAILABLE_MODELS = [
         "supports_compliance": False,  # Uncensored models don't support compliance
         "supports_images": True,  # Based on Gemma3
         "context_window": 32000,  # Based on Gemma3
+        "default_temperature": 0.9
     },
     {
         "name": "huihui_ai/mistral-small-abliterated:24b",
@@ -126,6 +147,7 @@ AVAILABLE_MODELS = [
         "supports_compliance": False,  # Uncensored models don't support compliance
         "supports_images": False,
         "context_window": 32000,  # Based on typical Mistral models
+        "default_temperature": 0.9
     },
     {
         "name": "redule26/huihui_ai_qwen2.5-vl-7b-abliterated:latest",
@@ -134,6 +156,7 @@ AVAILABLE_MODELS = [
         "supports_compliance": False,  # Uncensored models don't support compliance
         "supports_images": True,  # VL = Vision-Language model
         "context_window": 125000,  # Based on typical Qwen2.5 models
+        "default_temperature": 0.9
     },
 ]
 

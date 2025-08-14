@@ -1437,10 +1437,12 @@ class ChatWindow(QtWidgets.QMainWindow):
         self.current_chat_id: Optional[str] = None  # Track current chat
         self.selected_images: List[Dict[str, str]] = []  # List of {"data": base64_str, "type": mime_type, "path": file_path}
         self.multi_shot_count = 10  # Default number of parallel responses for multi-shot
+        self.temperature = config.AVAILABLE_MODELS[0]["default_temperature"]  # Default temperature from selected model
 
         self.session = ChatSession(
             base_system_prompt=SYSTEM_PROMPTS[self.selected_prompt_index]["prompt"],
             model_name=config.AVAILABLE_MODELS[self.selected_model_index]["name"],
+            temperature=self.temperature,
         )
         
         # Initialize chat persistence
@@ -1586,6 +1588,29 @@ class ChatWindow(QtWidgets.QMainWindow):
         
         self.multi_shot_slider.valueChanged.connect(self._on_multi_shot_count_changed)
         form.addRow("Multi-Shot Count", slider_container)
+
+        # Temperature slider
+        temp_container = QtWidgets.QWidget()
+        temp_layout = QtWidgets.QHBoxLayout(temp_container)
+        temp_layout.setContentsMargins(0, 0, 0, 0)
+        temp_layout.setSpacing(8)  # Match multi-shot slider spacing
+        
+        self.temperature_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.temperature_slider.setRange(0, 20)  # 0.0 to 2.0 in steps of 0.1
+        self.temperature_slider.setValue(int(self.temperature * 10))  # Convert float to slider value
+        self.temperature_slider.setMinimumHeight(32)
+        self.temperature_slider.setTickPosition(QtWidgets.QSlider.TicksBelow)
+        self.temperature_slider.setTickInterval(2)  # Ticks at 0.2 intervals
+        
+        self.temperature_value_label = QtWidgets.QLabel(f"{self.temperature:.1f}")
+        self.temperature_value_label.setMinimumWidth(25)
+        self.temperature_value_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        
+        temp_layout.addWidget(self.temperature_slider)
+        temp_layout.addWidget(self.temperature_value_label)
+        
+        self.temperature_slider.valueChanged.connect(self._on_temperature_changed)
+        form.addRow("Temperature", temp_container)
 
         card_layout.addLayout(form)
         sidebar_layout.addWidget(card)
@@ -1869,9 +1894,22 @@ class ChatWindow(QtWidgets.QMainWindow):
         self.multi_shot_count = value
         self.multi_shot_value_label.setText(str(value))
 
+    def _on_temperature_changed(self, value: int) -> None:
+        """Handle temperature slider value changes."""
+        self.temperature = value / 10.0  # Convert slider value to float
+        self.temperature_value_label.setText(f"{self.temperature:.1f}")
+        # Keep session in sync so new turns use the updated temperature
+        if hasattr(self, "session"):
+            self.session.temperature = self.temperature
+
     def _update_ui_for_model(self, model_index: int) -> None:
         """Update UI elements based on model capabilities."""
         model_info = config.AVAILABLE_MODELS[model_index]
+        
+        # Update temperature to model default
+        self.temperature = model_info["default_temperature"]
+        self.temperature_slider.setValue(int(self.temperature * 10))
+        self.temperature_value_label.setText(f"{self.temperature:.1f}")
         
         # Enable/disable compliance checkbox based on model capabilities
         self.compliance_checkbox.setEnabled(model_info["supports_compliance"])
@@ -1906,6 +1944,7 @@ class ChatWindow(QtWidgets.QMainWindow):
         self.session = ChatSession(
             base_system_prompt=SYSTEM_PROMPTS[self.selected_prompt_index]["prompt"],
             model_name=model_info["name"],
+            temperature=config.AVAILABLE_MODELS[index]["default_temperature"],
         )
         
         # Update UI for the new model
@@ -2458,7 +2497,9 @@ class ChatWindow(QtWidgets.QMainWindow):
             "compliance_enabled": self.add_special_message,
             "selected_prompt_index": self.selected_prompt_index,
             "selected_reasoning_index": self.selected_reasoning_index,
-            "selected_model_index": self.selected_model_index
+            "selected_model_index": self.selected_model_index,
+            "temperature": self.temperature,
+            "multi_shot_count": self.multi_shot_count
         }
         
         if self.current_chat_id:
@@ -2508,11 +2549,19 @@ class ChatWindow(QtWidgets.QMainWindow):
         if not chat_data:
             return
         
+        # Get metadata first
+        metadata = chat_data.get("metadata", {})
+        
+        # Get saved temperature or use current temperature as fallback
+        saved_temp = metadata.get("temperature")
+        session_temp = saved_temp if saved_temp is not None else self.temperature
+        
         # Reconstruct the session
         self.current_chat_id = chat_id
         self.session = ChatSession(
             base_system_prompt=chat_data["base_system_prompt"],
-            model_name=chat_data["model_name"]
+            model_name=chat_data["model_name"],
+            temperature=session_temp
         )
         
         # Restore messages
@@ -2529,9 +2578,6 @@ class ChatWindow(QtWidgets.QMainWindow):
                 token_count=msg_data.get("token_count")
             )
             self.session.messages.append(msg)
-        
-        # Restore metadata if available
-        metadata = chat_data.get("metadata", {})
         
         # Restore compliance state - always set it, defaulting to False if not in metadata
         self.add_special_message = metadata.get("compliance_enabled", False)
@@ -2573,14 +2619,36 @@ class ChatWindow(QtWidgets.QMainWindow):
                 self.selected_reasoning_index = metadata["selected_reasoning_index"]
                 self.reasoning_combo.setCurrentIndex(self.selected_reasoning_index)
             
-            # Update UI based on loaded model
+            # Update UI based on loaded model BEFORE restoring sliders,
+            # so model defaults do not overwrite persisted values
             self._update_ui_for_model(self.selected_model_index)
+
+            # Block signals for sliders
+            self.temperature_slider.blockSignals(True)
+            self.multi_shot_slider.blockSignals(True)
+            
+            # Restore temperature and multi-shot count
+            saved_temp = metadata.get("temperature")
+            if saved_temp is not None:  # Only override if explicitly saved
+                self.temperature = saved_temp
+                self.temperature_slider.setValue(int(self.temperature * 10))
+                self.temperature_value_label.setText(f"{self.temperature:.1f}")
+                if hasattr(self, "session"):
+                    self.session.temperature = self.temperature
+            
+            saved_multi_shot = metadata.get("multi_shot_count")
+            if saved_multi_shot is not None:  # Only override if explicitly saved
+                self.multi_shot_count = saved_multi_shot
+                self.multi_shot_slider.setValue(self.multi_shot_count)
+                self.multi_shot_value_label.setText(str(self.multi_shot_count))
             
         finally:
-            # Re-enable signals
+            # Re-enable all signals
             self.prompt_combo.blockSignals(False)
             self.model_combo.blockSignals(False)
             self.reasoning_combo.blockSignals(False)
+            self.temperature_slider.blockSignals(False)
+            self.multi_shot_slider.blockSignals(False)
         
         # Render the loaded chat
         self._render_history()

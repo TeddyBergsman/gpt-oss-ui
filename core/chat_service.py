@@ -34,6 +34,7 @@ class ChatSession:
     base_system_prompt: str
     model_name: str = config.MODEL_NAME
     messages: List[ChatMessage] = field(default_factory=list)
+    temperature: float = field(default_factory=lambda: config.AVAILABLE_MODELS[0]["default_temperature"])
 
     def __post_init__(self) -> None:
         if not self.messages:
@@ -59,7 +60,9 @@ class ChatSession:
         if reasoning_effort == "None":
             message_to_send += config.NOTHINK_PROMPT
 
-        model_options: dict[str, Any] = {}
+        model_options: dict[str, Any] = {
+            "temperature": self.temperature  # Use the session's temperature setting
+        }
         if reasoning_effort in ["High", "Medium", "Low"]:
             model_options["reasoning_effort"] = reasoning_effort.lower()
 
