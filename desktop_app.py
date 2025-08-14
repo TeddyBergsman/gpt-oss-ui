@@ -442,6 +442,14 @@ class MessageRow(QtWidgets.QWidget):
         self.stats_label.setText(f"· {stats}")
         self.stats_label.show()
     
+    def clear_stats(self) -> None:
+        """Hide performance stats from the header."""
+        try:
+            self.stats_label.setText("")
+            self.stats_label.hide()
+        except Exception:
+            pass
+    
     def add_images(self, images: List[Dict[str, str]]) -> None:
         """Add images to the message content."""
         if not images:
@@ -728,6 +736,28 @@ class MultiShotMessageRow(MessageRow):
         )
         self.responses[response_id] = response
     
+    def set_response_metrics(self, response_id: int, reasoning_time: float | None, response_time: float | None, token_count: int | None) -> None:
+        resp = self.responses.get(response_id)
+        if not resp:
+            return
+        resp.reasoning_time = reasoning_time
+        resp.response_time = response_time
+        resp.token_count = token_count
+    
+    def update_stats_for_current_selection(self) -> None:
+        """Update the header stats to match the currently selected response or hide for synthesis."""
+        if self._showing_synthesis:
+            self.clear_stats()
+            return
+        rid = self.current_response_id
+        resp = self.responses.get(rid)
+        if not resp or resp.response_time is None or resp.reasoning_time is None or resp.token_count is None or (resp.response_time or 0) <= 0:
+            self.clear_stats()
+            return
+        tokens_per_sec = (resp.token_count / resp.response_time) if resp.response_time and resp.response_time > 0 else 0
+        stats = f"{resp.reasoning_time:.1f}s (reasoning) · {resp.response_time:.1f}s (responding) · {tokens_per_sec:.1f} tokens/s"
+        self.append_stats(stats)
+    
     def finalize_synthesis(self, content: str, thinking: str, auto_select: bool = True) -> None:
         """Finalize synthesis and optionally auto-select it."""
         self.progress_label.setText("Synthesis complete")
@@ -772,9 +802,10 @@ class MultiShotMessageRow(MessageRow):
             # Show synthesis thinking if any
             if self._synthesis_thinking_accumulator:
                 self.ensure_reasoning_controls()
-                self.reasoning_view.setHtml(
-                    self._wrap_html(self._render_markdown(self._synthesis_thinking_accumulator))
-                )
+                self._reasoning_accumulator = self._synthesis_thinking_accumulator
+                self.reasoning_view.setHtml(self._wrap_html(f"<pre style='white-space:pre-wrap'>{html.escape(self._synthesis_thinking_accumulator)}</pre>"))
+            else:
+                self._reasoning_accumulator = ""
         else:
             self._showing_synthesis = False
             self.current_response_id = index
@@ -784,9 +815,12 @@ class MultiShotMessageRow(MessageRow):
             thinking = self._thinking_accumulators.get(index, "")
             if thinking:
                 self.ensure_reasoning_controls()
-                self.reasoning_view.setHtml(
-                    self._wrap_html(f"<pre style='white-space:pre-wrap'>{html.escape(thinking)}</pre>")
-                )
+                self._reasoning_accumulator = thinking
+                self.reasoning_view.setHtml(self._wrap_html(f"<pre style='white-space:pre-wrap'>{html.escape(thinking)}</pre>"))
+            else:
+                self._reasoning_accumulator = ""
+            # Update metrics/ stats to match this response
+            self.update_stats_for_current_selection()
 
 
 class StreamWorker(QtCore.QObject):
@@ -2323,14 +2357,26 @@ class ChatWindow(QtWidgets.QMainWindow):
                 if is_m2m:
                     row.enable_m2m_formatting()
                 
-                # Restore all responses
+                # Restore all responses, including persisted metrics
                 for response in multi_shot["responses"]:
-                    row._response_accumulators[response["id"]] = response["content"]
+                    rid = response["id"]
+                    row._response_accumulators[rid] = response["content"]
                     if response.get("thinking"):
-                        row._thinking_accumulators[response["id"]] = response["thinking"]
+                        row._thinking_accumulators[rid] = response["thinking"]
                     # Finalize the response
-                    row.finalize_response(response["id"], response["content"], 
-                                        response.get("thinking"), response["temperature"])
+                    row.finalize_response(rid, response["content"], response.get("thinking"), response["temperature"])
+                    # Render stats for each response if present
+                    rt = response.get("reasoning_time")
+                    rpt = response.get("response_time")
+                    tc = response.get("token_count")
+                    if rt is not None and rpt is not None and tc is not None and rpt > 0:
+                        tokens_per_sec = tc / rpt if rpt > 0 else 0
+                        stats = f"{rt:.1f}s (reasoning) · {rpt:.1f}s (responding) · {tokens_per_sec:.1f} tokens/s"
+                        # Temporarily show this response to attach stats
+                        prev_idx = row.response_selector.currentIndex()
+                        row.response_selector.setCurrentIndex(rid)
+                        row.append_stats(stats)
+                        row.response_selector.setCurrentIndex(prev_idx)
                 
                 # Restore synthesis
                 synthesis = multi_shot["synthesis"]
@@ -2847,17 +2893,18 @@ class ChatWindow(QtWidgets.QMainWindow):
             return
         if hasattr(self, "_current_multi_shot_bubble") and self._current_multi_shot_bubble:
             self._current_multi_shot_bubble.finalize_response(response_id, content, thinking, temperature)
-            # Add per-response stats if captured by worker
+            # Set per-response stats if captured by worker
             try:
                 resp = self._multi_shot_worker.responses[response_id]
-                if (resp.reasoning_time is not None and resp.response_time is not None and resp.token_count is not None and resp.response_time > 0):
-                    tokens_per_sec = resp.token_count / resp.response_time if resp.response_time > 0 else 0
-                    stats = f"{resp.reasoning_time:.1f}s (reasoning) · {resp.response_time:.1f}s (responding) · {tokens_per_sec:.1f} tokens/s"
-                    # Temporarily switch to the just-finished response to append stats, then switch back
-                    prev_index = self._current_multi_shot_bubble.response_selector.currentIndex()
-                    self._current_multi_shot_bubble.response_selector.setCurrentIndex(response_id)
-                    self._current_multi_shot_bubble.append_stats(stats)
-                    self._current_multi_shot_bubble.response_selector.setCurrentIndex(prev_index)
+                self._current_multi_shot_bubble.set_response_metrics(
+                    response_id,
+                    getattr(resp, "reasoning_time", None),
+                    getattr(resp, "response_time", None),
+                    getattr(resp, "token_count", None),
+                )
+                # If the finished response is currently selected, refresh stats display
+                if self._current_multi_shot_bubble.response_selector.currentIndex() == response_id:
+                    self._current_multi_shot_bubble.update_stats_for_current_selection()
             except Exception:
                 pass
             
@@ -3047,6 +3094,12 @@ class ChatWindow(QtWidgets.QMainWindow):
             if hasattr(self, "_current_multi_shot_bubble") and self._current_multi_shot_bubble:
                 self._current_multi_shot_bubble._response_accumulators[rid] = ""
                 self._current_multi_shot_bubble._thinking_accumulators[rid] = ""
+                # Clear visible reasoning panel if this response is currently selected
+                if self._current_multi_shot_bubble.current_response_id == rid and not self._current_multi_shot_bubble._showing_synthesis:
+                    self._current_multi_shot_bubble.ensure_reasoning_controls()
+                    self._current_multi_shot_bubble.reasoning_view.setHtml(self._current_multi_shot_bubble._wrap_html(""))
+                    self._current_multi_shot_bubble._reasoning_accumulator = ""
+                    self._current_multi_shot_bubble.clear_stats()
         except Exception:
             pass
 
