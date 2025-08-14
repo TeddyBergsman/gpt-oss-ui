@@ -1912,6 +1912,7 @@ class ChatWindow(QtWidgets.QMainWindow):
         self.add_special_message = bool(state)  # Convert to boolean - any non-zero state means checked
         print(f"add_special_message set to: {self.add_special_message}")
         print("=== End Toggle ===\n")
+        self._update_preset_selection_based_on_current_settings()
 
     def _on_prompt_changed(self, index: int) -> None:
         # Don't do anything if this is the same prompt
@@ -1933,13 +1934,16 @@ class ChatWindow(QtWidgets.QMainWindow):
         
         self._render_history()
         self._refresh_chat_history()
+        self._update_preset_selection_based_on_current_settings()
 
     def _on_reasoning_changed(self, index: int) -> None:
         self.selected_reasoning_index = index
+        self._update_preset_selection_based_on_current_settings()
 
     def _on_multi_shot_count_changed(self, value: int) -> None:
         self.multi_shot_count = value
         self.multi_shot_value_label.setText(str(value))
+        self._update_preset_selection_based_on_current_settings()
 
     def _on_temperature_changed(self, value: int) -> None:
         """Handle temperature slider value changes."""
@@ -1948,6 +1952,7 @@ class ChatWindow(QtWidgets.QMainWindow):
         # Keep session in sync so new turns use the updated temperature
         if hasattr(self, "session"):
             self.session.temperature = self.temperature
+        self._update_preset_selection_based_on_current_settings()
 
     # --- Presets ---
     def _collect_current_settings_for_preset(self) -> dict:
@@ -2123,6 +2128,37 @@ class ChatWindow(QtWidgets.QMainWindow):
         self.preset_manager.rename_preset(old_name, new_name)
         self._reload_presets_into_ui()
 
+    def _update_preset_selection_based_on_current_settings(self) -> None:
+        """If current settings match a preset, select it; otherwise clear selection."""
+        try:
+            current = self._collect_current_settings_for_preset()
+            presets = self.preset_manager.list_presets()
+            match_name = None
+            for p in presets:
+                # Compare only the settings keys, ignore name
+                same = (
+                    p.get("model_name") == current.get("model_name") and
+                    p.get("system_prompt_name") == current.get("system_prompt_name") and
+                    p.get("reasoning_effort") == current.get("reasoning_effort") and
+                    float(p.get("temperature")) == float(current.get("temperature")) and
+                    int(p.get("multi_shot_count")) == int(current.get("multi_shot_count")) and
+                    bool(p.get("compliance_enabled")) == bool(current.get("compliance_enabled"))
+                )
+                if same:
+                    match_name = p.get("name")
+                    break
+            self.preset_combo.blockSignals(True)
+            if match_name:
+                idx = self.preset_combo.findText(match_name)
+                if idx >= 0:
+                    self.preset_combo.setCurrentIndex(idx)
+                else:
+                    self.preset_combo.setCurrentIndex(-1)
+            else:
+                self.preset_combo.setCurrentIndex(-1)
+        finally:
+            self.preset_combo.blockSignals(False)
+
     def _update_ui_for_model(self, model_index: int) -> None:
         """Update UI elements based on model capabilities."""
         model_info = config.AVAILABLE_MODELS[model_index]
@@ -2174,6 +2210,7 @@ class ChatWindow(QtWidgets.QMainWindow):
         # Render the new empty chat
         self._render_history()
         self._refresh_chat_history()
+        self._update_preset_selection_based_on_current_settings()
 
     def _append_chat(self, role: str, content: str, thinking: Optional[str] = None, 
                      images: Optional[List[Dict[str, str]]] = None, 
@@ -2874,6 +2911,8 @@ class ChatWindow(QtWidgets.QMainWindow):
         # Render the loaded chat
         self._render_history()
         self._refresh_chat_history()
+        # Update preset selection according to loaded chat settings
+        self._update_preset_selection_based_on_current_settings()
     
     def _delete_chat(self, chat_id: str) -> None:
         """Delete a chat after confirmation."""
