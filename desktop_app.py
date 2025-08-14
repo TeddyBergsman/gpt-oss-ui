@@ -915,6 +915,8 @@ class MultiShotWorker(QtCore.QObject):
         self.responses: List[MultiShotResponse] = []
         self.completed_count = 0
         self._stop_requested = False
+        # Responses to ignore finishing events for (e.g., user-initiated stop + retry)
+        self._ignore_finished_ids: set[int] = set()
         
         # Calculate temperature distribution
         self.temperatures = self._calculate_temperatures(response_count)
@@ -1127,6 +1129,10 @@ class MultiShotWorker(QtCore.QObject):
         self.responses[rid].thinking = ""
         # Restart the same response id
         QtCore.QTimer.singleShot(0, lambda: self._start_next_response(rid))
+
+    def mark_ignore_finished(self, response_id: int) -> None:
+        """Mark a response id whose finished event should be ignored and not counted."""
+        self._ignore_finished_ids.add(response_id)
     
     def _on_response_token(self, response_id: int, token: str) -> None:
         """Handle streaming token from a response."""
@@ -1147,6 +1153,13 @@ class MultiShotWorker(QtCore.QObject):
     def _on_response_finished(self, response_id: int, content: str, thinking: str) -> None:
         """Handle completion of a single response."""
         if self._stop_requested:
+            return
+        if response_id in self._ignore_finished_ids:
+            # Ignore this finish (was user-aborted for retry)
+            try:
+                self._ignore_finished_ids.remove(response_id)
+            except KeyError:
+                pass
             return
             
         response = self.responses[response_id]
@@ -2801,6 +2814,12 @@ class ChatWindow(QtWidgets.QMainWindow):
                 if re.match(r"^(i['’]m\s+sorry)[\s,\.:;!?-]*", prefix, re.IGNORECASE):
                     self._ms_apology_triggered = True
                     self._ms_last_apology_response_id = response_id
+                    # Mark this response to ignore its imminent finished event when we stop its thread
+                    try:
+                        if hasattr(self, "_multi_shot_worker") and self._multi_shot_worker:
+                            self._multi_shot_worker.mark_ignore_finished(response_id)
+                    except Exception:
+                        pass
                     self._trigger_apology_retry_multi_shot()
                     return
             self._current_multi_shot_bubble.append_response_token(response_id, token)
@@ -2823,11 +2842,8 @@ class ChatWindow(QtWidgets.QMainWindow):
         if hasattr(self, "_current_multi_shot_bubble") and self._current_multi_shot_bubble:
             self._current_multi_shot_bubble.finalize_response(response_id, content, thinking, temperature)
             
-            # Auto-switch to next response as they complete (except for the last one)
-            # This provides visual feedback of progress through the responses
-            if response_id < self._current_multi_shot_bubble.response_count - 1:
-                # Switch to the next response that's about to generate
-                self._current_multi_shot_bubble.response_selector.setCurrentIndex(response_id + 1)
+            # Auto-switch to next response is disabled during apology retry for stability
+            # We keep the current selection to avoid UI jumping and reasoning mixing
     
     @QtCore.Slot(str)
     def _on_synthesis_token(self, token: str) -> None:
