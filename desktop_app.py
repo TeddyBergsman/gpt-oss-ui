@@ -403,13 +403,22 @@ class MessageRow(QtWidgets.QWidget):
         self.reasoning_view.setHtml(self._wrap_html(""))
         self.reasoning_view.setVisible(False)
         layout.addWidget(self.reasoning_view)
-        # Insert reasoning block ABOVE the assistant bubble, right after the row header
+        # Insert reasoning block BELOW the selector (if present), above the assistant bubble
         # Prefer modern layout; gracefully handle legacy attribute if present
         target_layout = getattr(self, "_content_wrap", None)
         if target_layout is None and hasattr(self, "_outer_layout"):
             target_layout = getattr(self, "_outer_layout")
         if isinstance(target_layout, (QtWidgets.QBoxLayout,)):
-            target_layout.insertWidget(1, self.reasoning_container)
+            insert_index = 1
+            try:
+                selector_container = getattr(self, "selector_container", None)
+                if selector_container is not None:
+                    idx = target_layout.indexOf(selector_container)
+                    if idx >= 0:
+                        insert_index = idx + 1
+            except Exception:
+                pass
+            target_layout.insertWidget(insert_index, self.reasoning_container)
         else:
             # Fallback to top-level layout
             top_layout = self.layout()
@@ -552,6 +561,7 @@ class MultiShotMessageRow(MessageRow):
     def _create_response_selector(self) -> None:
         """Create dropdown selector for responses."""
         selector_container = QtWidgets.QWidget()
+        self.selector_container = selector_container
         selector_layout = QtWidgets.QHBoxLayout(selector_container)
         selector_layout.setContentsMargins(0, 0, 0, 4)
         selector_layout.setSpacing(6)
@@ -581,9 +591,8 @@ class MultiShotMessageRow(MessageRow):
         
         selector_layout.addStretch(1)
         
-        # Insert selector above the bubble (after header, before bubble)
-        bubble_index = self._content_wrap.indexOf(self.bubble)
-        self._content_wrap.insertWidget(bubble_index, selector_container)
+        # Insert selector above the reasoning container and bubble (right after the header)
+        self._content_wrap.insertWidget(1, selector_container)
     
     def _calculate_temperature(self, index: int) -> float:
         """Calculate temperature for given index using the same algorithm as MultiShotWorker."""
@@ -718,6 +727,7 @@ class MultiShotMessageRow(MessageRow):
     
     def append_synthesis_token(self, token: str) -> None:
         """Append a streaming token to synthesis."""
+        # Only synthesis content goes into the content bubble when synthesis is selected; otherwise, buffer silently
         self._synthesis_accumulator += token
         
         # If synthesis is selected, update display
