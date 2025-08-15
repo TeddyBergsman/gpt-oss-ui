@@ -708,7 +708,13 @@ class MultiShotMessageRow(MessageRow):
         
         # If this is the currently selected response, update reasoning
         if self.current_response_id == response_id and not self._showing_synthesis:
-            self.append_reasoning(token)
+            self.ensure_reasoning_controls()
+            content = self._thinking_accumulators.get(response_id, "")
+            self._reasoning_accumulator = content
+            self.reasoning_view.setHtml(
+                self._wrap_html(f"<pre style='white-space:pre-wrap'>{html.escape(content)}</pre>")
+            )
+            self._ensure_parent_scroll_to_bottom()
     
     def append_synthesis_token(self, token: str) -> None:
         """Append a streaming token to synthesis."""
@@ -724,7 +730,13 @@ class MultiShotMessageRow(MessageRow):
         
         # If synthesis is selected, update reasoning
         if self._showing_synthesis:
-            self.append_reasoning(token)
+            self.ensure_reasoning_controls()
+            content = self._synthesis_thinking_accumulator
+            self._reasoning_accumulator = content
+            self.reasoning_view.setHtml(
+                self._wrap_html(f"<pre style='white-space:pre-wrap'>{html.escape(content)}</pre>")
+            )
+            self._ensure_parent_scroll_to_bottom()
     
     def finalize_response(self, response_id: int, content: str, thinking: str, temperature: float) -> None:
         """Finalize a response when streaming is complete."""
@@ -2365,18 +2377,13 @@ class ChatWindow(QtWidgets.QMainWindow):
                         row._thinking_accumulators[rid] = response["thinking"]
                     # Finalize the response
                     row.finalize_response(rid, response["content"], response.get("thinking"), response["temperature"])
-                    # Render stats for each response if present
-                    rt = response.get("reasoning_time")
-                    rpt = response.get("response_time")
-                    tc = response.get("token_count")
-                    if rt is not None and rpt is not None and tc is not None and rpt > 0:
-                        tokens_per_sec = tc / rpt if rpt > 0 else 0
-                        stats = f"{rt:.1f}s (reasoning) · {rpt:.1f}s (responding) · {tokens_per_sec:.1f} tokens/s"
-                        # Temporarily show this response to attach stats
-                        prev_idx = row.response_selector.currentIndex()
-                        row.response_selector.setCurrentIndex(rid)
-                        row.append_stats(stats)
-                        row.response_selector.setCurrentIndex(prev_idx)
+                    # Persist metrics into the row's response map so stats update on selection
+                    row.set_response_metrics(
+                        rid,
+                        response.get("reasoning_time"),
+                        response.get("response_time"),
+                        response.get("token_count"),
+                    )
                 
                 # Restore synthesis
                 synthesis = multi_shot["synthesis"]
@@ -2390,6 +2397,8 @@ class ChatWindow(QtWidgets.QMainWindow):
                 
                 # Select synthesis tab by default when loading from history
                 row.response_selector.setCurrentIndex(row.response_count)
+                # Ensure header stats reflect current selection (none on synthesis)
+                row.update_stats_for_current_selection()
             else:
                 # Regular message
                 row = MessageRow(role="assistant", title="Assistant")
