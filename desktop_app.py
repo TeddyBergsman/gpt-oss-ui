@@ -724,6 +724,10 @@ class MultiShotMessageRow(MessageRow):
                 self._wrap_html(f"<pre style='white-space:pre-wrap'>{html.escape(content)}</pre>")
             )
             self._ensure_parent_scroll_to_bottom()
+            # Auto-show reasoning when content arrives
+            if not self.reasoning_toggle.isChecked():
+                self.reasoning_toggle.setChecked(True)
+                self._toggle_reasoning()
     
     def append_synthesis_token(self, token: str) -> None:
         """Append a streaming token to synthesis."""
@@ -747,6 +751,10 @@ class MultiShotMessageRow(MessageRow):
                 self._wrap_html(f"<pre style='white-space:pre-wrap'>{html.escape(content)}</pre>")
             )
             self._ensure_parent_scroll_to_bottom()
+            # Auto-show reasoning when content arrives
+            if not self.reasoning_toggle.isChecked():
+                self.reasoning_toggle.setChecked(True)
+                self._toggle_reasoning()
     
     def finalize_response(self, response_id: int, content: str, thinking: str, temperature: float) -> None:
         """Finalize a response when streaming is complete."""
@@ -1141,7 +1149,14 @@ class MultiShotWorker(QtCore.QObject):
         """Start generating a single response."""
         if self._stop_requested or response_id >= self.response_count:
             return
-        
+        # If a previous attempt for this response was ignored (due to retry),
+        # clear the ignore mark so the new successful finish will count.
+        try:
+            if hasattr(self, "_ignore_finished_ids"):
+                self._ignore_finished_ids.discard(response_id)
+        except Exception:
+            pass
+
         self._current_response_id = response_id
         temperature = self.temperatures[response_id]
         options = self.base_options.copy()
@@ -1548,6 +1563,14 @@ class ChatWindow(QtWidgets.QMainWindow):
         self._current_streamed_text = ""
         self._apology_prefix_checked = False
 
+        # Spiral retry state (reasoning loop detection)
+        self.spiral_retry_max = 10  # Default to 10 retries; 0=off
+        self._spiral_retry_active = False
+        self._spiral_retry_attempts = 0
+        self._spiral_retry_original_text = ""
+        self._spiral_retry_images = []
+        self._spiral_reasoning_buffer = ""
+
         self.session = ChatSession(
             base_system_prompt=SYSTEM_PROMPTS[self.selected_prompt_index]["prompt"],
             model_name=config.AVAILABLE_MODELS[self.selected_model_index]["name"],
@@ -1740,6 +1763,29 @@ class ChatWindow(QtWidgets.QMainWindow):
 
         self.apology_retry_slider.valueChanged.connect(self._on_apology_retry_changed)
         form.addRow("Apology Retry", apology_slider_container)
+
+        # Spiral Retry slider (detect repeated reasoning loops)
+        spiral_slider_container = QtWidgets.QWidget()
+        spiral_slider_layout = QtWidgets.QHBoxLayout(spiral_slider_container)
+        spiral_slider_layout.setContentsMargins(0, 0, 0, 0)
+        spiral_slider_layout.setSpacing(8)
+
+        self.spiral_retry_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.spiral_retry_slider.setRange(0, 10)
+        self.spiral_retry_slider.setValue(self.spiral_retry_max)
+        self.spiral_retry_slider.setMinimumHeight(32)
+        self.spiral_retry_slider.setTickPosition(QtWidgets.QSlider.TicksBelow)
+        self.spiral_retry_slider.setTickInterval(1)
+
+        self.spiral_retry_value_label = QtWidgets.QLabel(str(self.spiral_retry_max))
+        self.spiral_retry_value_label.setMinimumWidth(25)
+        self.spiral_retry_value_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+
+        spiral_slider_layout.addWidget(self.spiral_retry_slider)
+        spiral_slider_layout.addWidget(self.spiral_retry_value_label)
+
+        self.spiral_retry_slider.valueChanged.connect(self._on_spiral_retry_changed)
+        form.addRow("Spiral Retry", spiral_slider_container)
 
         # Multi-shot count slider
         slider_container = QtWidgets.QWidget()
@@ -2082,6 +2128,12 @@ class ChatWindow(QtWidgets.QMainWindow):
         self.apology_retry_value_label.setText(str(self.apology_retry_max))
         self._update_preset_selection_based_on_current_settings()
 
+    def _on_spiral_retry_changed(self, value: int) -> None:
+        """Handle spiral retry slider value changes."""
+        self.spiral_retry_max = int(value)
+        self.spiral_retry_value_label.setText(str(self.spiral_retry_max))
+        self._update_preset_selection_based_on_current_settings()
+
     def _on_temperature_changed(self, value: int) -> None:
         """Handle temperature slider value changes."""
         self.temperature = value / 10.0  # Convert slider value to float
@@ -2104,6 +2156,7 @@ class ChatWindow(QtWidgets.QMainWindow):
             "multi_shot_count": int(self.multi_shot_count),
             "compliance_enabled": bool(self.add_special_message),
             "apology_retry_max": int(self.apology_retry_max),
+            "spiral_retry_max": int(self.spiral_retry_max),
         }
 
     def _apply_preset(self, preset: dict) -> None:
@@ -2115,6 +2168,7 @@ class ChatWindow(QtWidgets.QMainWindow):
         multi_shot_count = int(preset.get("multi_shot_count", self.multi_shot_count))
         compliance_enabled = bool(preset.get("compliance_enabled", self.add_special_message))
         apology_retry_max = int(preset.get("apology_retry_max", self.apology_retry_max))
+        spiral_retry_max = int(preset.get("spiral_retry_max", self.spiral_retry_max))
 
         model_index = next((i for i, m in enumerate(config.AVAILABLE_MODELS) if m["name"] == model_name), 0)
         prompt_index = next((i for i, p in enumerate(SYSTEM_PROMPTS) if p["name"] == prompt_name), 0)
@@ -2143,6 +2197,7 @@ class ChatWindow(QtWidgets.QMainWindow):
         self.multi_shot_count = multi_shot_count
         self.add_special_message = compliance_enabled
         self.apology_retry_max = apology_retry_max
+        self.spiral_retry_max = spiral_retry_max
 
         # Recreate session for new combination
         self.current_chat_id = None
@@ -2164,6 +2219,9 @@ class ChatWindow(QtWidgets.QMainWindow):
         if hasattr(self, 'apology_retry_slider'):
             self.apology_retry_slider.setValue(self.apology_retry_max)
             self.apology_retry_value_label.setText(str(self.apology_retry_max))
+        if hasattr(self, 'spiral_retry_slider'):
+            self.spiral_retry_slider.setValue(self.spiral_retry_max)
+            self.spiral_retry_value_label.setText(str(self.spiral_retry_max))
         self.compliance_checkbox.setChecked(self.add_special_message)
 
         for w in widgets:
@@ -2477,6 +2535,25 @@ class ChatWindow(QtWidgets.QMainWindow):
             self._apology_retry_original_text = ""
             self._apology_retry_images = []
 
+        # Initialize spiral retry state for this turn
+        if self.spiral_retry_max > 0:
+            try:
+                from copy import deepcopy as _deepcopy
+                self._spiral_retry_active = True
+                self._spiral_retry_attempts = 0
+                self._spiral_retry_original_text = user_text
+                self._spiral_retry_images = _deepcopy(self.selected_images) if self.selected_images else []
+            except Exception:
+                self._spiral_retry_active = True
+                self._spiral_retry_attempts = 0
+                self._spiral_retry_original_text = user_text
+                self._spiral_retry_images = []
+        else:
+            self._spiral_retry_active = False
+            self._spiral_retry_attempts = 0
+            self._spiral_retry_original_text = ""
+            self._spiral_retry_images = []
+
         # Clear selected images after sending
         self._clear_selected_images()
 
@@ -2529,6 +2606,25 @@ class ChatWindow(QtWidgets.QMainWindow):
             self._apology_retry_original_text = ""
             self._apology_retry_images = []
 
+        # Initialize spiral retry state for multi-shot
+        if self.spiral_retry_max > 0:
+            try:
+                from copy import deepcopy as _deepcopy
+                self._spiral_retry_active = True
+                self._spiral_retry_attempts = 0
+                self._spiral_retry_original_text = user_text
+                self._spiral_retry_images = _deepcopy(self.selected_images) if self.selected_images else []
+            except Exception:
+                self._spiral_retry_active = True
+                self._spiral_retry_attempts = 0
+                self._spiral_retry_original_text = user_text
+                self._spiral_retry_images = []
+        else:
+            self._spiral_retry_active = False
+            self._spiral_retry_attempts = 0
+            self._spiral_retry_original_text = ""
+            self._spiral_retry_images = []
+
         # Clear selected images after sending
         self._clear_selected_images()
 
@@ -2574,6 +2670,9 @@ class ChatWindow(QtWidgets.QMainWindow):
         self._current_streamed_text = ""
         self._apology_prefix_checked = False
         self._ignore_current_finished = False
+        # Reset spiral detection buffers
+        self._spiral_reasoning_buffer = ""
+        self._spiral_token_buffer = []
 
         self._stream_thread = QtCore.QThread(self)  # keep reference
         self._worker = StreamWorker(self.session.model_name, model_messages, model_options)
@@ -2608,6 +2707,34 @@ class ChatWindow(QtWidgets.QMainWindow):
     def _on_thinking(self, text: str) -> None:
         # Append streamed reasoning into the current assistant row
         if hasattr(self, "_current_assistant_bubble") and self._current_assistant_bubble:
+            # Spiral loop detection on reasoning stream
+            try:
+                if self._spiral_retry_active and self.spiral_retry_max > 0 and self._spiral_retry_attempts < self.spiral_retry_max:
+                    # Append to both char-level and token-level buffers
+                    self._spiral_reasoning_buffer += text
+                    import re as _re
+                    # Tokenize tail to catch cycling lists (e.g., Echo Resilience Hope ...)
+                    tail_tokens = _re.sub(r"[^a-z0-9]+", " ", self._spiral_reasoning_buffer[-4000:].lower()).split()
+                    self._spiral_token_buffer = (self._spiral_token_buffer + tail_tokens)[-512:]
+                    n = len(self._spiral_token_buffer)
+                    # Detect block repetition of size 1..64 repeated 3 times at end
+                    found = False
+                    for m in range(1, min(64, n // 3) + 1):
+                        B = self._spiral_token_buffer[n - m : n]
+                        if m < 4 and len(set(B)) < 2:
+                            continue
+                        if (
+                            self._spiral_token_buffer[n - 2*m : n - m] == B and
+                            self._spiral_token_buffer[n - 3*m : n - 2*m] == B
+                        ):
+                            found = True
+                            break
+                    if found:
+                        self._trigger_spiral_retry()
+                        return
+            except Exception:
+                pass
+
             self._current_assistant_bubble.append_reasoning(text)
             self.scroll_to_bottom_if_needed()
     
@@ -2632,6 +2759,12 @@ class ChatWindow(QtWidgets.QMainWindow):
         if hasattr(self, "_stream_thread"):
             self._stream_thread.quit()
             self._stream_thread.wait()
+
+        # Reset spiral retry state on error
+        self._spiral_retry_active = False
+        self._spiral_retry_attempts = 0
+        self._spiral_retry_original_text = ""
+        self._spiral_retry_images = []
 
     @QtCore.Slot(str, str, float, float, int)
     def _on_finished(self, content: str, thinking: str, reasoning_time: float, response_time: float, token_count: int) -> None:
@@ -2687,6 +2820,11 @@ class ChatWindow(QtWidgets.QMainWindow):
         self._apology_retry_attempts = 0
         self._apology_retry_original_text = ""
         self._apology_retry_images = []
+        # Reset spiral retry state after a normal finish
+        self._spiral_retry_active = False
+        self._spiral_retry_attempts = 0
+        self._spiral_retry_original_text = ""
+        self._spiral_retry_images = []
     
     def _on_stop_generation(self) -> None:
         """Stop the current generation."""
@@ -2711,6 +2849,11 @@ class ChatWindow(QtWidgets.QMainWindow):
         self._apology_retry_attempts = 0
         self._apology_retry_original_text = ""
         self._apology_retry_images = []
+        # Cancel spiral retry state
+        self._spiral_retry_active = False
+        self._spiral_retry_attempts = 0
+        self._spiral_retry_original_text = ""
+        self._spiral_retry_images = []
 
     def _clear_chat_without_saving(self) -> None:
         """Clear the current chat/session and UI without persisting a partial turn."""
@@ -2784,6 +2927,65 @@ class ChatWindow(QtWidgets.QMainWindow):
 
         QtCore.QTimer.singleShot(0, _do_resend)
 
+    def _trigger_spiral_retry(self) -> None:
+        """Abort current stream due to detected reasoning spiral and retry by clearing chat and resending."""
+        if not (self._spiral_retry_active and self._spiral_retry_attempts < self.spiral_retry_max):
+            return
+        self._spiral_retry_attempts += 1
+
+        # Preserve last user message images if possible
+        try:
+            from copy import deepcopy as _deepcopy
+            last_images = []
+            if self.session.messages and self.session.messages[-1].role == "user":
+                last_images = _deepcopy(self.session.messages[-1].images or [])
+            if last_images:
+                self._spiral_retry_images = last_images
+        except Exception:
+            pass
+
+        # Stop current worker and ignore its finished event
+        self._ignore_current_finished = True
+        if hasattr(self, "_worker") and self._worker:
+            try:
+                self._worker.request_stop()
+            except Exception:
+                pass
+        if hasattr(self, "_stream_thread") and self._stream_thread:
+            try:
+                self._stream_thread.quit()
+                self._stream_thread.wait()
+            except Exception:
+                pass
+
+        # Remove current assistant bubble
+        if hasattr(self, "_current_assistant_bubble") and self._current_assistant_bubble:
+            try:
+                self._current_assistant_bubble.deleteLater()
+            except Exception:
+                pass
+            self._current_assistant_bubble = None
+
+        # Clear chat without saving
+        self._clear_chat_without_saving()
+
+        # If we've exhausted retries, stop retrying
+        if self._spiral_retry_attempts >= self.spiral_retry_max:
+            self._spiral_retry_active = False
+
+        original_text = self._spiral_retry_original_text or ""
+        images = self._spiral_retry_images or []
+
+        # Reset detection buffer
+        self._spiral_reasoning_buffer = ""
+
+        def _do_resend_spiral() -> None:
+            self.session.add_user_message(original_text, images)
+            self._append_chat("user", original_text, images=images if images else None)
+            self._start_stream_thread(original_text)
+
+        QtCore.QTimer.singleShot(0, _do_resend_spiral)
+
     def _start_multi_shot_stream(self, user_text: str) -> None:
         """Start multi-shot generation with temperature variation."""
         # Get current model info
@@ -2839,6 +3041,11 @@ class ChatWindow(QtWidgets.QMainWindow):
         self._multi_shot_streamed_prefixes = {}
         self._ms_apology_triggered = False
         self._ms_last_apology_response_id = None
+        self._ms_spiral_triggered_ids = set()
+        self._ms_reasoning_buffers = {}
+        self._ms_reasoning_token_buffers = {}
+        self._ms_content_token_buffers = {}
+        self._ms_retrying_response_id = None
 
         # Connect streaming signals
         self._multi_shot_thread.started.connect(self._multi_shot_worker.run)
@@ -2871,6 +3078,28 @@ class ChatWindow(QtWidgets.QMainWindow):
         if getattr(self, "_ignore_multi_shot_events", False):
             return
         if hasattr(self, "_current_multi_shot_bubble") and self._current_multi_shot_bubble:
+            # Spiral detection on content to catch cycles mistakenly emitted as content
+            try:
+                if self._spiral_retry_active and self.spiral_retry_max > 0 and self._spiral_retry_attempts < self.spiral_retry_max:
+                    import re as _re
+                    norm = _re.sub(r"[^a-z0-9]+", " ", token.lower())
+                    if norm.strip():
+                        buf = self._ms_content_token_buffers.get(response_id, [])
+                        new_toks = [t for t in norm.split() if t]
+                        buf = (buf + new_toks)[-512:]
+                        self._ms_content_token_buffers[response_id] = buf
+                        n = len(buf)
+                        for m in range(1, min(64, n // 3) + 1):
+                            B = buf[n - m : n]
+                            if m < 4 and len(set(B)) < 2:
+                                continue
+                            if n >= 3*m and buf[n - 2*m : n - m] == B and buf[n - 3*m : n - 2*m] == B:
+                                # Route to reasoning instead of content
+                                self._current_multi_shot_bubble.append_response_thinking(response_id, token)
+                                self.scroll_to_bottom_if_needed()
+                                return
+            except Exception:
+                pass
             # Detect apology in any response prefix
             if (
                 self._apology_retry_active
@@ -2902,6 +3131,34 @@ class ChatWindow(QtWidgets.QMainWindow):
         if getattr(self, "_ignore_multi_shot_events", False):
             return
         if hasattr(self, "_current_multi_shot_bubble") and self._current_multi_shot_bubble:
+            # Spiral detection per response (reasoning stream)
+            try:
+                if self._spiral_retry_active and self.spiral_retry_max > 0 and self._spiral_retry_attempts < self.spiral_retry_max:
+                    import re as _re
+                    # Maintain both char buffer and token buffer
+                    prev_buf = self._ms_reasoning_buffers.get(response_id, "") + token
+                    self._ms_reasoning_buffers[response_id] = prev_buf[-2000:]
+                    toks = _re.sub(r"[^a-z0-9]+", " ", token.lower()).split()
+                    tok_buf = self._ms_reasoning_token_buffers.get(response_id, [])
+                    tok_buf = (tok_buf + toks)[-512:]
+                    self._ms_reasoning_token_buffers[response_id] = tok_buf
+                    # Detect repeated token block m repeated 3x
+                    n = len(tok_buf)
+                    cyclical = False
+                    for m in range(1, min(64, n // 3) + 1):
+                        B = tok_buf[n - m : n]
+                        if m < 4 and len(set(B)) < 2:
+                            continue
+                        if n >= 3*m and tok_buf[n - 2*m : n - m] == B and tok_buf[n - 3*m : n - 2*m] == B:
+                            cyclical = True
+                            break
+                    if cyclical and response_id not in getattr(self, "_ms_spiral_triggered_ids", set()):
+                        self._ms_spiral_triggered_ids.add(response_id)
+                        self._trigger_spiral_retry_multi_shot(response_id)
+                        return
+            except Exception:
+                pass
+
             self._current_multi_shot_bubble.append_response_thinking(response_id, token)
             self.scroll_to_bottom_if_needed()
     
@@ -2927,8 +3184,12 @@ class ChatWindow(QtWidgets.QMainWindow):
             except Exception:
                 pass
             
-            # If not in an apology-triggered retry state, auto-switch to the next unfinished response
-            if not getattr(self, "_ms_apology_triggered", False):
+            # If not in any retry state for this response, auto-switch to next unfinished
+            active_retry_for_this = (
+                (getattr(self, "_ms_apology_triggered", False) and (response_id == getattr(self, "_ms_last_apology_response_id", None))) or
+                (getattr(self, "_ms_retrying_response_id", None) == response_id)
+            )
+            if not active_retry_for_this:
                 try:
                     # Find the smallest response id greater than current that is not yet completed
                     next_id = None
@@ -2942,6 +3203,13 @@ class ChatWindow(QtWidgets.QMainWindow):
                         self._current_multi_shot_bubble.response_selector.setCurrentIndex(next_id)
                 except Exception:
                     pass
+            else:
+                # Clear retry lock when this response successfully finishes
+                try:
+                    if getattr(self, "_ms_retrying_response_id", None) == response_id:
+                        self._ms_retrying_response_id = None
+                except Exception:
+                    pass
     
     @QtCore.Slot(str)
     def _on_synthesis_token(self, token: str) -> None:
@@ -2950,6 +3218,9 @@ class ChatWindow(QtWidgets.QMainWindow):
             return
         if hasattr(self, "_current_multi_shot_bubble") and self._current_multi_shot_bubble:
             self._current_multi_shot_bubble.append_synthesis_token(token)
+            # Ensure synthesis tab renders live
+            if self._current_multi_shot_bubble.response_selector.currentIndex() != self._current_multi_shot_bubble.response_count:
+                self._current_multi_shot_bubble.response_selector.setCurrentIndex(self._current_multi_shot_bubble.response_count)
             self.scroll_to_bottom_if_needed()
     
     @QtCore.Slot(str)
@@ -2959,6 +3230,17 @@ class ChatWindow(QtWidgets.QMainWindow):
             return
         if hasattr(self, "_current_multi_shot_bubble") and self._current_multi_shot_bubble:
             self._current_multi_shot_bubble.append_synthesis_thinking(token)
+            # Ensure reasoning panel is visible for synthesis (auto-switch to synthesis tab)
+            if self._current_multi_shot_bubble.response_selector.currentIndex() != self._current_multi_shot_bubble.response_count:
+                self._current_multi_shot_bubble.response_selector.setCurrentIndex(self._current_multi_shot_bubble.response_count)
+            # Ensure the reasoning is visible as it streams
+            try:
+                self._current_multi_shot_bubble.ensure_reasoning_controls()
+                if not self._current_multi_shot_bubble.reasoning_toggle.isChecked():
+                    self._current_multi_shot_bubble.reasoning_toggle.setChecked(True)
+                    self._current_multi_shot_bubble._toggle_reasoning()
+            except Exception:
+                pass
             self.scroll_to_bottom_if_needed()
     
     @QtCore.Slot(str, str)
@@ -3132,6 +3414,55 @@ class ChatWindow(QtWidgets.QMainWindow):
         except Exception:
             pass
 
+    def _trigger_spiral_retry_multi_shot(self, response_id: int) -> None:
+        """Abort and retry a specific multi-shot response due to spiral detection."""
+        if not (self._spiral_retry_active and self._spiral_retry_attempts < self.spiral_retry_max):
+            return
+        self._spiral_retry_attempts += 1
+        # Mark ignore for imminent finish
+        try:
+            if hasattr(self, "_multi_shot_worker") and self._multi_shot_worker:
+                self._multi_shot_worker.mark_ignore_finished(response_id)
+        except Exception:
+            pass
+        # Stop only the specified response thread
+        try:
+            if hasattr(self, "_multi_shot_worker") and self._multi_shot_worker:
+                resp = self._multi_shot_worker.responses.get(response_id)
+                if resp and resp.worker:
+                    resp.worker.request_stop()
+                if resp and resp.thread:
+                    resp.thread.quit(); resp.thread.wait()
+        except Exception:
+            pass
+
+        # Clear the response's buffers
+        try:
+            if hasattr(self, "_current_multi_shot_bubble") and self._current_multi_shot_bubble:
+                self._current_multi_shot_bubble._response_accumulators[response_id] = ""
+                self._current_multi_shot_bubble._thinking_accumulators[response_id] = ""
+                if self._current_multi_shot_bubble.current_response_id == response_id and not self._current_multi_shot_bubble._showing_synthesis:
+                    self._current_multi_shot_bubble.ensure_reasoning_controls()
+                    self._current_multi_shot_bubble.reasoning_view.setHtml(self._current_multi_shot_bubble._wrap_html(""))
+                    self._current_multi_shot_bubble._reasoning_accumulator = ""
+                    self._current_multi_shot_bubble.clear_stats()
+        except Exception:
+            pass
+
+        # Restart that response and lock selector on this response id
+        try:
+            if hasattr(self, "_multi_shot_worker") and self._multi_shot_worker:
+                self._multi_shot_worker.retry_current_response()
+                # Lock UI focus to this response until it finishes
+                self._ms_retrying_response_id = response_id
+                try:
+                    if hasattr(self, "_current_multi_shot_bubble") and self._current_multi_shot_bubble:
+                        self._current_multi_shot_bubble.response_selector.setCurrentIndex(response_id)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     # --- Message helpers ---
     def _add_row(self, row: 'MessageRow') -> None:
         # Insert above the stretch item
@@ -3201,7 +3532,8 @@ class ChatWindow(QtWidgets.QMainWindow):
             "selected_model_index": self.selected_model_index,
             "temperature": self.temperature,
             "multi_shot_count": self.multi_shot_count,
-            "apology_retry_max": self.apology_retry_max
+            "apology_retry_max": self.apology_retry_max,
+            "spiral_retry_max": self.spiral_retry_max
         }
         
         if self.current_chat_id:
