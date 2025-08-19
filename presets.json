@@ -28,6 +28,17 @@
       "name": "Uncensored GPT"
     },
     {
+      "model_name": "huihui_ai/gemma3n-abliterated:e4b-fp16",
+      "system_prompt_name": "Shadow",
+      "reasoning_effort": "High",
+      "temperature": 0.9,
+      "multi_shot_count": 10,
+      "compliance_enabled": false,
+      "apology_retry_max": 10,
+      "spiral_retry_max": 10,
+      "name": "Uncensored 4B"
+    },
+    {
       "model_name": "gemma3:1b",
       "system_prompt_name": "Shadow",
       "reasoning_effort": "High",
@@ -39,5 +50,5 @@
       "name": "Instant 1B"
     }
   ],
-  "last_selected": "Uncensored GPT"
+  "last_selected": "Uncensored 4B"
 }
